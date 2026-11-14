@@ -1,0 +1,415 @@
+#ifndef VATUI_HPP
+#define VATUI_HPP
+
+//- vatui —— 终端帧缓冲工具库
+//
+//  构建在 vaterm 之上，提供：
+//    Framebuffer  —— 双缓冲单元格矩阵、基于差异的交换，
+//                    支持 UTF-8 / 宽字符、带样式的填充与文本。
+//    VaTui        —— 单例，持有一个 Framebuffer + 一个终端实例。
+//
+//  用法：
+//    auto& tui = VaTui::instance();
+//    tui.init();
+//    auto& fb = tui.buffer();
+//    fb.printText({.col = 0, .row = 0, .text = "Hi", .style = {...}});
+//    fb.swap();
+//
+
+#include <cstddef>
+#include <cstdint>
+#include <initializer_list>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "vaterm/color.hpp"
+#include "vaterm/enums.hpp"
+#include "vaterm/term.hpp"
+
+namespace vatui {
+
+//- 颜色 SGR 辅助函数
+//
+// 每次调用都在首次使用时检测终端色深（此后缓存），
+// 并自动把输入转换为终端原生色深。
+// 在 Style 初始化器中使用：
+//   Style{.fg_sgr = fg(Color4::GREEN), .bg_sgr = bg(Color8{196})}
+//
+// 转换规则（fg 与 bg 相同）：
+//   Color4 → 直通（4-bit 在任何终端上都可用）
+//   Color8 → C24: 经 _256_to_rgb 升位转换
+//            C4:  经 _256_to_rgb + nearest_4bit 降位转换
+//            C8:  直通
+//   Rgb    → C24: 直通
+//            C8:  经 rgb_to_256 降位转换
+//            C4:  经 nearest_4bit 降位转换
+// lc3124: 不是所有终端都兼容全色彩，在此实现兼容层，自动探测终端颜色深度，然后找
+// 当前深度下与预期最接近的颜色
+
+/**
+ * @brief 前景色：把输入转换为当前色深下的 SGR 序列，转换规则已经在前文详述。
+ * @param c 4-bit / 8-bit / 24-bit 颜色，或 Trans。
+ * @return 对应的前景色 SGR 串。
+ */
+std::string fg(vaterm::Color4 c);
+std::string fg(vaterm::Color8 c);
+std::string fg(vaterm::Rgb c);
+std::string fg(vaterm::Trans);
+
+/**
+ * @brief 背景色：把输入转换为当前色深下的 SGR 序列。
+ * @param c 4-bit / 8-bit / 24-bit 颜色，或 Trans（产生空串）。
+ * @return 对应的背景色 SGR 串。
+ */
+std::string bg(vaterm::Color4 c);
+std::string bg(vaterm::Color8 c);
+std::string bg(vaterm::Rgb c);
+std::string bg(vaterm::Trans);
+
+/**
+ * @brief 把一组 SGR 效果合并成一条转义序列。
+ * @param list 效果列表。
+ * @return 形如 "\033[1;4m" 的合并序列。
+ */
+std::string effects(std::initializer_list<vaterm::TextEffect> list);
+
+//- 终端色深访问点
+//
+// 首次调用探测一次并缓存。set_color_depth() 可强制指定色深（测试 / 手动
+// 降级时用），传 std::nullopt 则恢复自动探测。
+//
+// 这是全库唯一持有色深状态的地方：原先每个 fg/bg 重载都自带一个函数内
+// static 缓存，彼此重复且无法在测试中注入。
+
+/**
+ * @brief 当前终端色深；首次调用探测并缓存。
+ * @return C4 / C8 / C24。
+ */
+vaterm::ColorDepth color_depth();
+
+/**
+ * @brief 强制指定色深（测试 / 手动降级）。
+ * @param depth 目标色深；传 std::nullopt 恢复自动探测。
+ */
+void set_color_depth(std::optional<vaterm::ColorDepth> depth);
+
+//- 样式描述符（预计算的 SGR 串）
+//
+// 每个颜色值在赋值时就会被转换成对应的 ANSI SGR 序列。
+// fillRegion / printText 之后只需把三部分拼接一次，
+// 并把结果存入每个 Cell::sgr_。
+//
+//   Style{.fg_sgr = fg(Rgb{255,100,50}),
+//         .bg_sgr = bg(Color4::BLACK),
+//         .effects_sgr = effects({TextEffect::BOLD})}
+
+/**
+ * @brief 一组预计算好的 SGR 串，供填充 / 文本绘制使用。
+ */
+struct Style {
+    std::string fg_sgr      = vaterm::color::fg(vaterm::Color4::WHITE);  ///< 前景 SGR 串
+    std::string bg_sgr      = vatui::bg(vaterm::TRANS);                   ///< 背景 SGR 串（默认空 = 沿用终端原生背景）
+    std::string effects_sgr = "";                                         ///< 效果 SGR 串（默认空）
+};
+
+//- 参数结构体（支持指定初始化器语法）
+
+/** @brief setSize 的参数。 */
+struct SizeArgs {
+    int col; ///< 列数
+    int row; ///< 行数
+};
+
+/** @brief setPosition / importFrame 的参数。 */
+struct PositionArgs {
+    int col; ///< 列偏移
+    int row; ///< 行偏移
+};
+
+/** @brief printText 的参数。 */
+struct TextArgs {
+    int              col;  ///< 起始列
+    int              row;  ///< 起始行
+    std::string_view text; ///< 待绘制文本
+    Style            style = {}; ///< 样式
+};
+
+/** @brief clearRegion 的参数。 */
+struct RegionArgs {
+    int col; ///< 起始列
+    int row; ///< 起始行
+    int w;   ///< 宽
+    int h;   ///< 高
+};
+
+/** @brief fillRegion 的参数。 */
+struct FillArgs {
+    int   col; ///< 起始列
+    int   row; ///< 起始行
+    int   w;   ///< 宽
+    int   h;   ///< 高
+    char  ch;  ///< 填充字符
+    Style style = {}; ///< 样式
+};
+
+//- Framebuffer（双缓冲单元格矩阵）
+
+/**
+ * @brief 双缓冲单元格矩阵，负责按差异输出到终端。
+ * @note lc3124(261112): 当前这个模块还在验证，实际的输出不该让swap()来做，
+ *       在之后的封装中，swap方法会退化成仅仅将缓冲区合成一段可渲染命令序列
+ *
+ * 所有绘制都写入缓冲区，最后统一由 swap() 与上一帧比较后增量输出。
+ * 私有成员仅供 VaTui 友元访问。
+ */
+class Framebuffer {
+  public:
+
+    //-- 缓冲尺寸
+
+    /** @brief 重设缓冲尺寸并按新尺寸清空。 */
+    void setSize(SizeArgs args);
+
+    /** @brief 当前缓冲列数。 */
+    int getColMax() const { return max_col_; }
+
+    /** @brief 当前缓冲行数。 */
+    int getRowMax() const { return max_row_; }
+
+    //-- 屏幕偏移
+
+    /** @brief 设置输出到屏幕的偏移（左上角落点）。 */
+    void setPosition(PositionArgs args);
+
+    /** @brief 当前列偏移。 */
+    int getOffsetCol() const { return off_col_; }
+
+    /** @brief 当前行偏移。 */
+    int getOffsetRow() const { return off_row_; }
+
+    //-- 绘制
+
+    /**
+     * @brief 在 (col,row) 处绘制一段带样式的文本。
+     * @param absolute_start true 表示这段文本的第一格必须用绝对光标定位输出，
+     *        即使它和上一段在缓冲区里是连续的。用于右对齐/分段绘制，避免
+     *        前面一段里宽字符的宽度误差把后面整段带偏。
+     */
+    void printText(TextArgs args, bool absolute_start = false);
+
+    /** @brief 用默认样式清空整个缓冲。 */
+    void clear();
+
+    /** @brief 清空指定矩形区域。 */
+    void clearRegion(RegionArgs args);
+
+    /** @brief 用指定字符与样式填充矩形区域。 */
+    void fillRegion(FillArgs args);
+
+    //-- 导入
+
+    /**
+     * @brief 从另一个 Framebuffer 拷贝单元格到本对象的 (off_col, off_row) 处。
+     * @note 目的地上的宽字符碎片会在覆盖前被清理；源中越过目的地右边缘的
+     *       宽字符，会用源自身样式的一个空格替换。
+     * @param offset 拷贝到本对象的落点。
+     * @param src    源缓冲区。
+     * @note lc3124(261112): 目前支持透明，我考虑过要不要支持部分透明和半透明，不过
+     *       我应该暂时节约精力
+     */
+    void importFrame(PositionArgs offset, const Framebuffer& src);
+
+    //-- 输出
+
+    /** @brief 与上一帧比较差异并增量输出到终端。 */
+    void swap();
+
+    /**
+     * @brief 把当前缓冲合成为一段可直接写给终端的字符串（含 SGR 与光标定位）。
+     * @note 供 swap() 复用，也供 --snapshot 之类的离屏渲染使用。
+     *       副作用：刷新 last_composed_cells()。
+     */
+    std::string compose() const;
+
+    /**
+     * @brief 把当前缓冲合成为纯文本（无 SGR，每行去掉右侧空白）。
+     * @note 一行一个 '\n'，末尾也有换行；方便 diff / golden 测试。
+     */
+    std::string compose_plain() const;
+
+    /** @brief 最近一次 compose()/swap() 写出的单元格数。 */
+    std::size_t last_composed_cells() const { return last_composed_cells_; }
+
+  private:
+    friend class VaTui;
+
+    struct Cell {
+        bool        isLong_    = false; ///< 如果这个cell要容纳多宽符号，那么标记为true
+        bool        isHead_    = false; ///< 如果这个cell是多宽字符的开始列，标记为true
+        char32_t    cp_        = 0;     ///< 可以被直接拷贝走的数据
+        char        data_      = ' ';   ///< 非多宽字符用这个存储
+        uint32_t    sgr_id_    = 0;     ///< sgr池的索引id，用于从池取得sgr序列
+        bool        anchor_    = false; ///< 该格必须绝对定位输出（compose 用）
+    };
+
+    Cell& cell_at_(int col, int row) {
+        return buf_[static_cast<size_t>(row) * max_col_ + col];
+    }
+
+    const Cell& cell_at_(int col, int row) const {
+        return buf_[static_cast<size_t>(row) * max_col_ + col];
+    }
+
+    static void reset_cell_(Cell& cell) {
+        cell.data_   = ' ';
+        cell.cp_     = 0;
+        cell.isLong_ = false;
+        cell.isHead_ = true;
+        cell.anchor_ = false;
+        // 不动 sgr_id_——由调用方设置
+    }
+
+// lc3124: 下方的内联函数全部由ai枚举和实现，包括sgr池的维护、sgr序列的计算、拼接，和必要的数据成员
+// 目的是支撑我为`vatui`设计的功能
+
+    // sgr_id 编码：
+    //   第 31 位: has_fg（1 = 设置了前景色，0 = TRANS）
+    //   第 30 位: has_bg（1 = 设置了背景色，0 = TRANS）
+    //   第 0-29 位: sgr_pool_ 中的下标
+    static uint32_t make_sgr_id_(uint32_t index, bool has_fg, bool has_bg) {
+        return (has_fg ? 0x80000000u : 0) | (has_bg ? 0x40000000u : 0) | (index & 0x3FFFFFFF);
+    }
+
+    // 把一个 SGR 串登记进池中：返回它在池里的下标（在池内去重），
+    // 并把 has_fg/has_bg 标志编码进高位。
+    uint32_t intern_sgr_(const std::string& s, bool has_fg, bool has_bg) {
+        for (size_t i = 0; i < sgr_pool_.size(); ++i)
+            if (sgr_pool_[i] == s)
+                return make_sgr_id_(static_cast<uint32_t>(i), has_fg, has_bg);
+        sgr_pool_.push_back(s);
+        return make_sgr_id_(static_cast<uint32_t>(sgr_pool_.size() - 1), has_fg, has_bg);
+    }
+
+    // 从合成的 SGR 串中提取前景 SGR 序列。
+    // 返回形如 "\033[31m" 的串；没有则返回 ""。
+    static std::string extract_fg_sgr_(const std::string& s) {
+        size_t best = std::string::npos;
+        // 8/24-bit：\033[38;5;N m 或 \033[38;2;R;G;B m
+        {
+            auto pos = s.rfind("\033[38;");
+            if (pos != std::string::npos) best = pos;
+        }
+        // 4-bit：\033[30-37m / \033[90-97m —— 取最右匹配
+        for (auto p : {"\033[3", "\033[9"}) {
+            auto pos = s.rfind(p);
+            if (pos != std::string::npos && pos + 3 < s.size()) {
+                char d = s[pos + 3];
+                if (d >= '0' && d <= '7' && (best == std::string::npos || pos > best))
+                    best = pos;
+            }
+        }
+        if (best == std::string::npos) return {};
+        auto end = s.find('m', best);
+        return s.substr(best, end + 1 - best);
+    }
+
+    // 从合成的 SGR 串中提取背景 SGR 序列。
+    static std::string extract_bg_sgr_(const std::string& s) {
+        size_t best = std::string::npos;
+        // 8/24-bit：\033[48;5;N m 或 \033[48;2;R;G;B m
+        {
+            auto pos = s.rfind("\033[48;");
+            if (pos != std::string::npos) best = pos;
+        }
+        // 4-bit：\033[40-47m / \033[100-107m —— 取最右匹配
+        // （\033[48; 会被下面的数字判定自然排除）
+        for (auto p : {"\033[4", "\033[10"}) {
+            auto pos = s.rfind(p);
+            if (pos != std::string::npos && pos + 3 < s.size()) {
+                char d = s[pos + 3];
+                if (d >= '0' && d <= '7' && (best == std::string::npos || pos > best))
+                    best = pos;
+            }
+        }
+        if (best == std::string::npos) return {};
+        auto end = s.find('m', best);
+        return s.substr(best, end + 1 - best);
+    }
+
+    // 从合成的 SGR 串中提取所有非颜色 SGR 序列（即效果）。
+    static std::string extract_effects_sgr_(const std::string& s) {
+        std::string r;
+        size_t pos = 0;
+        while ((pos = s.find("\033[", pos)) != std::string::npos) {
+            if (pos + 3 >= s.size()) break;
+            auto end = s.find('m', pos);
+            if (end == std::string::npos) break;
+            auto seq = s.substr(pos, end + 1 - pos);
+            bool is_color = false;
+            if (seq.size() > 4 && seq[3] == '8' && s[pos + 4] == ';')
+                is_color = true;                     // 38; 或 48;
+            else if (seq.size() >= 4) {
+                char p1 = seq[2];                    // "\033[" 里 '[' 之后的数字
+                if ((p1 == '3' || p1 == '4') && seq[3] >= '0' && seq[3] <= '7')
+                    is_color = true;                 // 30-37 或 40-47
+                if (seq.size() >= 5 && p1 == '1' && seq[3] == '0' && seq[4] >= '0' && seq[4] <= '7')
+                    is_color = true;                 // 100-107
+                if (p1 == '9' && seq[3] >= '0' && seq[3] <= '7')
+                    is_color = true;                 // 90-97
+            }
+            if (!is_color) r += seq;
+            pos = end + 1;
+        }
+        return r;
+    }
+
+    int                      max_col_ = 0;
+    int                      max_row_ = 0;
+    int                      off_col_ = 0;
+    int                      off_row_ = 0;
+    std::vector<Cell>        buf_;
+    bool                     dirty_   = false;
+    mutable std::string      out_buf_;   // 可复用的 swap 输出缓冲（compose 是 const）
+    std::vector<std::string> sgr_pool_;  // SGR 去重池
+    mutable std::size_t      last_composed_cells_ = 0; // 最近一帧写出的单元格数
+};
+
+//- VaTui 单例
+
+/** @brief 全局单例：持有一个 Framebuffer 与一个终端实例。 */
+class VaTui {
+  public:
+
+    /** @brief 取全局单例。 */
+    static VaTui& instance();
+
+    // 不可拷贝。
+    VaTui(const VaTui&) = delete;
+    VaTui& operator=(const VaTui&) = delete;
+
+    //-- 生命周期
+
+    /**
+     * @brief 进入 raw 模式、隐藏光标、清屏。可安全多次调用（幂等）。
+     */
+    void init();
+
+    //-- Framebuffer 访问
+
+    /** @brief 取内部 Framebuffer。 */
+    Framebuffer& buffer() { return fb_; }
+
+  private:
+    VaTui();
+    ~VaTui();
+
+    Framebuffer          fb_;
+    vaterm::terminal     term_;
+    bool                 initialized_ = false;
+};
+
+} // namespace vatui
+
+#endif // VATUI_HPP

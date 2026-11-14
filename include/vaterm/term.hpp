@@ -1,0 +1,185 @@
+#ifndef VATERM_TERM_HPP
+#define VATERM_TERM_HPP
+
+//- vaterm::terminal — 终端模式切换、屏幕控制与 I/O
+//
+// terminal 类提供：
+//
+//   1. RAII raw 模式：  enter_raw() / ~terminal() 在析构时
+//                       自动恢复原有的 termios。
+//   2. 清屏：            clear_screen()、clear_to_eol()、
+//                       clear_to_eos()、clear_line()。
+//   3. 终端查询：        size(rows, cols)、type()。
+//   4. I/O：             write()、flush()、read_byte()、getch()。
+//
+// 所有静态方法（clear_*、size、type、write、flush、read_byte、
+// getch）都是线程安全的，无需实例。实例仅在
+// 管理 raw 模式时才需要。
+//
+// 示例：
+//   terminal t;
+//   t.enter_raw();
+//   terminal::write(terminal::clear_screen());
+//   terminal::write("Hello under raw mode!\n");
+//   // ~terminal() 会自动恢复原有设置。
+//
+// 实现见 src/vaterm/term.cpp；清屏与尺寸便捷包装是纯格式化，
+// 留在头内 inline。
+
+#include "vaterm/enums.hpp"
+
+#include <cstdint>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <termios.h>
+
+namespace vaterm {
+
+class terminal {
+  public:
+    terminal() = default;
+    ~terminal();
+
+    // 不可拷贝——持有 raw 模式状态。
+    terminal(const terminal&)            = delete;
+    terminal& operator=(const terminal&) = delete;
+
+    //-- 清屏序列（静态）
+
+    /**
+     * @brief 清空整个屏幕并把光标移到 (1,1)。
+     * @return 完整的清屏转义序列。
+     */
+    static std::string clear_screen() {
+        return "\033[2J\033[H";
+    }
+
+    /**
+     * @brief 从光标处清到行尾（EL 0）。
+     * @return 该操作的转义序列。
+     */
+    static std::string clear_to_eol() {
+        return "\033[K";
+    }
+
+    /**
+     * @brief 从光标处清到屏幕末尾（ED 0）。
+     * @return 该操作的转义序列。
+     */
+    static std::string clear_to_eos() {
+        return "\033[J";
+    }
+
+    /**
+     * @brief 清空当前整行并把光标退回第 1 列。
+     * @return 该操作的转义序列。
+     */
+    static std::string clear_line() {
+        return "\033[2K\r";
+    }
+
+    //-- 终端查询（静态）
+
+    /**
+     * @brief 通过 TIOCGWINSZ ioctl 查询终端尺寸。
+     * @param rows 成功时填入检测到的行数。
+     * @param cols 成功时填入检测到的列数。
+     * @return 成功返回 true；失败（例如不是 tty）返回 false。
+     */
+    static bool size(uint16_t& rows, uint16_t& cols);
+
+    /**
+     * @brief size() 的便捷包装，直接返回列数。
+     * @return 列数；出错（例如不是 tty）时返回 0。
+     */
+    static int getColMax() {
+        uint16_t r = 0, c = 0;
+        return size(r, c) ? static_cast<int>(c) : 0;
+    }
+
+    /**
+     * @brief size() 的便捷包装，直接返回行数。
+     * @return 行数；出错（例如不是 tty）时返回 0。
+     */
+    static int getRowMax() {
+        uint16_t r = 0, c = 0;
+        return size(r, c) ? static_cast<int>(r) : 0;
+    }
+
+    /**
+     * @brief 返回环境变量 $TERM 的值。
+     * @return $TERM 的值；未设置时为空串。
+     */
+    static std::string type();
+
+    /**
+     * @brief 通过检查 $COLORTERM 与 $TERM 检测终端支持的最大色深。
+     * @note 结果在首次调用后会被缓存。
+     * @return C24 —— truecolor / 24-bit（例如 $COLORTERM=truecolor）
+     *          C8  —— 256 色（例如 $TERM=xterm-256color）
+     *          C4  —— 16 色 / 其他未知情况
+     */
+    static ColorDepth detect_color_depth();
+
+    //-- raw 模式（实例方法）
+
+    /**
+     * @brief 使用 cfmakeraw(3) 把 stdin 切到 raw 模式。
+     * @note raw 模式会关闭行缓冲、信号键（^C、^Z）以及回显。
+     *        调用 enter_raw() 后，每次按键都可以立刻通过 read() 读到。
+     *
+     *        VMIN = 0、VTIME = 1 会给出带 100 ms 超时的非阻塞读
+     *        —— 若暂无数据待读，read_byte() 会返回 -1。
+     * @return 成功返回 true；stdin 不是 tty 或
+     *          tcgetattr/tcsetattr 失败时返回 false。
+     */
+    bool enter_raw();
+
+    /**
+     * @brief 恢复 enter_raw() 保存下来的原有终端设置。
+     * @note 由析构函数自动调用。
+     */
+    void exit_raw();
+
+    /**
+     * @brief 检查当前是否处于 raw 模式。
+     * @return true 表示已进入 raw 模式。
+     */
+    bool is_raw() const { return raw_; }
+
+    //-- I/O（静态）
+
+    /**
+     * @brief 向 stdout 写一个字符串。
+     * @param s 待写入的字节。
+     */
+    static void write(std::string_view s);
+
+    /**
+     * @brief 刷新 stdout（fsync）。在 write() 之后调用，确保终端立刻收到数据。
+     */
+    static void flush();
+
+    /**
+     * @brief 从 stdin 非阻塞地读一个字节。
+     * @note 在 raw 模式（VMIN=0、VTIME=1）下，若 100 ms 内无数据可读
+     *        则返回空。
+     * @return 读到的字节；无数据时返回 std::nullopt。
+     */
+    static std::optional<unsigned char> read_byte();
+
+    /**
+     * @brief read_byte() 的阻塞版本：循环等待直到有字节到达。
+     * @return 读到的字节。
+     */
+    static char getch();
+
+  private:
+    bool        raw_ = false;       // raw 模式是否处于激活状态
+    struct termios original_;       // raw 模式之前的 termios 备份
+};
+
+} // namespace vaterm
+
+#endif // VATERM_TERM_HPP
