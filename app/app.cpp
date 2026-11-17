@@ -137,6 +137,25 @@ std::string elide_tail(std::string_view text, int width) {
     return "…" + std::string(view);
 }
 
+// 保留头部（日志摘要从开头读）。
+std::string elide_head(std::string_view text, int width) {
+    if (width <= 1 || vaterm::utf::width(text) <= width) return std::string(text);
+    std::string out;
+    int used = 0;
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        std::size_t n = vaterm::utf::char_bytes(text.substr(pos));
+        if (!n || pos + n > text.size()) break;
+        int w = vaterm::utf::char_width(text.substr(pos));
+        if (w < 1) w = 1;
+        if (used + w > width - 1) break;
+        out.append(text.substr(pos, n));
+        used += w;
+        pos += n;
+    }
+    return out + "…";
+}
+
 const vatui::Style& level_style(vawk::widget::LogLevel level) {
     const auto& t = theme();
     switch (level) {
@@ -303,7 +322,6 @@ void App::prepare_widgets() {
 
     focus_.add(&log_panel_);
     focus_.add(&node_panel_);
-    focus_.add(&mode_panel_);
 
     log_view_.set_follow(true);
 }
@@ -1312,6 +1330,14 @@ bool App::handle_global_key(const vaterm::InputData& event) {
 
     if (key.cp == 'q') { running_ = false; return true; }
 
+    if (key.cp == 'h') { focus_.focus(&log_panel_); dirty_ = true; return true; }
+    if (key.cp == 'l') { focus_.focus(&node_panel_); dirty_ = true; return true; }
+    if (key.cp == 'j' || key.cp == 'k') {
+        InputData move = InputData::makeKeybd(
+            {.code = key.cp == 'j' ? KeyCode::DOWN : KeyCode::UP});
+        return focus_.route(move);
+    }
+
     if (key.cp == ' ') {
         bool follow = log_view_.following();
         log_view_.set_follow(!follow);
@@ -1345,6 +1371,13 @@ void App::handle_mouse(const vaterm::InputData& event) {
     const auto& mouse = event.value.mouse;
 
     if (mouse.action == MouseAction::PRESS && mouse.button == MouseButton::LEFT) {
+        // 模式面板不在焦点链里，点击直接交给分段控件。
+        if (mode_seg_.bounds().contains(mouse.col, mouse.row)) {
+            mode_seg_.on_event(event);
+            dirty_ = true;
+            return;
+        }
+
         // 点节点面板的顶栏 = 展开分组下拉（标题里的 ▾）。
         if (node_panel_.bounds().contains(mouse.col, mouse.row)
             && mouse.row == node_panel_.bounds().y) {
@@ -1417,23 +1450,26 @@ void App::layout() {
 
     const int content_h = std::max(1, h - 1);
 
-    // 底部详情窗：先留出来，剩下的再按 2×2 分。
-    int inspector_h = std::clamp(content_h / 4, 6, 9);
-    if (content_h - inspector_h < 12)
-        inspector_h = std::max(3, content_h - 12);
-
-    const int upper_h = std::max(1, content_h - inspector_h);
-    int       bottom_h = std::clamp(upper_h / 3, 5, 9);
-    if (upper_h - bottom_h < 5) bottom_h = std::max(3, upper_h - 5);
-
     int left_w = (w >= 72) ? std::clamp(w * 2 / 3, 44, std::max(44, w - 24))
                            : w / 2;
     left_w = std::clamp(left_w, 10, std::max(10, w - 10));
 
-    auto [upper, inspector] = split_v(Rect{0, 0, w, content_h}, upper_h);
-    auto [top_area, bottom_area] = split_v(upper, upper_h - bottom_h);
-    auto [log_rect, node_rect]   = split_h(top_area, left_w);
+    // 模式/网速一行放底部，剩余高度给「日志 + 详情」和节点。
+    int bottom_h = std::clamp(content_h / 3, 5, 8);
+    if (content_h - bottom_h < 10) bottom_h = std::max(3, content_h - 10);
+
+    auto [upper, bottom_area] = split_v(Rect{0, 0, w, content_h},
+                                        content_h - bottom_h);
+    auto [left_area, node_rect] = split_h(upper, left_w);
     auto [speed_rect, mode_rect] = split_h(bottom_area, left_w);
+
+    // 详情窗从日志面板里切出来，只占几行。
+    int inspector_h = std::clamp(upper.h / 3, 4, 6);
+    if (upper.h - inspector_h < 6) inspector_h = std::max(3, upper.h - 6);
+
+    Rect log_rect{left_area.x, left_area.y, left_area.w,
+                  std::max(3, left_area.h - inspector_h)};
+    Rect inspector{left_area.x, log_rect.bottom(), left_area.w, inspector_h};
 
     log_panel_.set_bounds(log_rect);
     node_panel_.set_bounds(node_rect);
@@ -1614,16 +1650,11 @@ void App::render_inspector(Canvas& canvas, const Rect& rect) {
 
         std::string head = std::string("[") + level_name(line->level) + "] " + line->text;
         int y = rect.y;
-        bool first = true;
-        for (const auto& row : wrap_text(head, rect.w)) {
-            if (y >= rect.bottom()) break;
-            canvas.put_text(rect.x, y, row, first ? level_style(line->level) : t.value);
-            first = false;
-            ++y;
-        }
+        canvas.put_text(rect.x, y, elide_head(head, rect.w), level_style(line->level));
+        ++y;
 
-        if (y < rect.bottom()) {
-            canvas.put_text(rect.x, y, "── 原始日志 ──", t.dim);
+        if (rect.h >= 5 && y < rect.bottom()) {
+            canvas.put_text(rect.x, y, "── 原始 ──", t.dim);
             ++y;
         }
         for (const auto& row : wrap_text(line->raw, rect.w)) {
@@ -1723,11 +1754,13 @@ void App::render_status(Canvas& canvas, const Rect& rect) {
         }
         if (text.empty()) {
             if (rect.w >= 100)
-                text = "Tab 焦点  ↑↓ 选择  Enter 应用  t 全测  Space 暂停  "
+                text = "Tab/h/l 切换  j/k 选择  Enter 应用  t 全测  Space 暂停  "
                        "v 格式  [ ] 分组  d/r/g 模式  ? 帮助  q 退出";
+            else if (rect.w >= 76)
+                text = "Tab/h/l 切换 j/k 选择 Enter 应用 t 全测 Space 暂停 "
+                       "v 格式 ? 帮助 q 退出";
             else
-                text = "Tab 焦点 ↑↓ 选择 Enter 应用 t 全测 Space 暂停 "
-                       "v 格式 / 过滤 ? 帮助 q 退出";
+                text = "Tab/h/l 切换 j/k 选择 t 全测 ? 帮助 q 退出";
         }
     }
 
@@ -1787,7 +1820,7 @@ void App::render_dropdown(Canvas& canvas) {
 void App::render_help(Canvas& canvas, const Rect& screen) {
     const auto& t = theme();
     const int   w = std::min(56, std::max(20, screen.w - 4));
-    const int   h = std::min(16, std::max(8, screen.h - 4));
+    const int   h = std::min(18, std::max(8, screen.h - 2));
     Rect box{(screen.w - w) / 2, (screen.h - h) / 2, w, h};
 
     canvas.fill(box, ' ', t.help_bg);
@@ -1798,7 +1831,9 @@ void App::render_help(Canvas& canvas, const Rect& screen) {
     canvas.border_gradient(box, BoxStyle::Double, help_gradient, "快捷键", help_title);
 
     const char* lines[] = {
-        "Tab / Shift-Tab   切换焦点",
+        "Tab / Shift-Tab   在日志与节点之间切换",
+        "h / l             切到左窗（日志）/ 右窗（节点）",
+        "j / k             下移 / 上移（日志选行、节点选节点）",
         "↑ ↓               日志选行（下方看原文）/ 节点移动",
         "Enter             应用选中的节点",
         "t                 全部节点测速（自动切回原节点）",
