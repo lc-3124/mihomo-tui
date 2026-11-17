@@ -58,6 +58,12 @@ class ListView : public Widget {
     void render(Canvas& canvas) override;
     bool on_event(const vaterm::InputData& event) override;
 
+    // 选中行渐变背景
+    bool     gradient_enabled = true;
+    Gradient selected_gradient{270, 320, 0.9, 0.38};
+    double   hue_shift = 0.0;
+    vatui::Style selected_fg{};
+
     vatui::Style normal_style{};
     vatui::Style selected_style{};
     vatui::Style unfocused_selected_style{};

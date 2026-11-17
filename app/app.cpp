@@ -44,7 +44,7 @@ extern "C" void on_sigwinch(int) { g_winch = 1; }
 
 struct Theme {
     vatui::Style label, value, dim, down, up, warn, error, ok;
-    vatui::Style status, help_bg, accent, selected;
+    vatui::Style status, status_text, help_bg, accent, selected, head;
 };
 
 Theme make_theme() {
@@ -53,26 +53,109 @@ Theme make_theme() {
                             .bg_sgr = vatui::bg(vaterm::TRANS),
                             .effects_sgr = vatui::effects({})};
     };
+    auto rgb = [](int r, int g, int b, bool bold = false) {
+        return vatui::Style{
+            .fg_sgr = vatui::fg(vaterm::Rgb{static_cast<uint8_t>(r),
+                                            static_cast<uint8_t>(g),
+                                            static_cast<uint8_t>(b)}),
+            .bg_sgr = vatui::bg(vaterm::TRANS),
+            .effects_sgr = vatui::effects(
+                bold ? std::initializer_list<vaterm::TextEffect>{vaterm::TextEffect::BOLD}
+                     : std::initializer_list<vaterm::TextEffect>{})};
+    };
+
     Theme t;
-    t.label  = fgc(245);
-    t.value  = fgc(252);
-    t.dim    = fgc(243);
-    t.down   = fgc(114);
-    t.up     = fgc(75);
-    t.warn   = fgc(220);
-    t.error  = fgc(203);
-    t.ok     = fgc(114);
-    t.accent = fgc(81);
+    t.label   = rgb(150, 170, 205);
+    t.value   = rgb(235, 242, 255);
+    t.dim     = rgb(108, 122, 150);
+    t.down    = rgb(90, 230, 255);
+    t.up      = rgb(120, 255, 180);
+    t.warn    = rgb(255, 215, 80);
+    t.error   = rgb(255, 95, 120);
+    t.ok      = rgb(120, 255, 160);
+    t.accent  = rgb(255, 120, 220, true);
+    t.head    = rgb(90, 240, 255, true);
     t.status = vatui::Style{.fg_sgr = vatui::fg(vaterm::Color8{252}),
                             .bg_sgr = vatui::bg(vaterm::Color8{236}),
                             .effects_sgr = vatui::effects({})};
+    t.status_text = rgb(255, 255, 255, true);
     t.help_bg = vatui::Style{.fg_sgr = vatui::fg(vaterm::Color8{252}),
                              .bg_sgr = vatui::bg(vaterm::Color8{234}),
                              .effects_sgr = vatui::effects({})};
     t.selected = vatui::Style{.fg_sgr = vatui::fg(vaterm::Color8{231}),
-                              .bg_sgr = vatui::bg(vaterm::Color8{24}),
+                              .bg_sgr = vatui::bg(vaterm::Color8{54}),
                               .effects_sgr = vatui::effects({vaterm::TextEffect::BOLD})};
+    (void)fgc;
     return t;
+}
+
+const Theme& theme();
+
+// 按显示宽度硬换行，保留原有换行符。
+std::vector<std::string> wrap_text(std::string_view text, int width) {
+    std::vector<std::string> out;
+    if (width < 1) width = 1;
+
+    std::string line;
+    int         used = 0;
+    for (std::size_t pos = 0; pos < text.size();) {
+        if (text[pos] == '\n') {
+            out.push_back(line);
+            line.clear();
+            used = 0;
+            ++pos;
+            continue;
+        }
+        std::size_t n = vaterm::utf::char_bytes(text.substr(pos));
+        if (n == 0) { ++pos; continue; }
+        if (pos + n > text.size()) break;
+
+        int w = vaterm::utf::char_width(text.substr(pos));
+        if (w < 1) w = 1;
+
+        if (used + w > width) {
+            out.push_back(line);
+            line.clear();
+            used = 0;
+        }
+        line.append(text.substr(pos, n));
+        used += w;
+        pos += n;
+    }
+    out.push_back(line);
+    return out;
+}
+
+// 保留尾部（域名后缀更有信息量）的省略。
+std::string elide_tail(std::string_view text, int width) {
+    if (width <= 1 || vaterm::utf::width(text) <= width) return std::string(text);
+    std::string_view view = text;
+    while (!view.empty() && vaterm::utf::width(view) > width - 1) {
+        std::size_t n = vaterm::utf::char_bytes(view);
+        view.remove_prefix(n ? n : 1);
+    }
+    return "…" + std::string(view);
+}
+
+const vatui::Style& level_style(vawk::widget::LogLevel level) {
+    const auto& t = theme();
+    switch (level) {
+    case vawk::widget::LogLevel::Error: return t.error;
+    case vawk::widget::LogLevel::Warn:  return t.warn;
+    case vawk::widget::LogLevel::Debug: return t.dim;
+    case vawk::widget::LogLevel::Info:  break;
+    }
+    return t.value;
+}
+
+const char* level_name(vawk::widget::LogLevel level) {
+    switch (level) {
+    case vawk::widget::LogLevel::Error: return "ERR";
+    case vawk::widget::LogLevel::Warn:  return "WRN";
+    case vawk::widget::LogLevel::Debug: return "DBG";
+    case vawk::widget::LogLevel::Info:  break;
+    }
+    return "INF";
 }
 
 const Theme& theme() {
@@ -175,6 +258,39 @@ App::App(AppOptions options) : opts_(std::move(options)), demo_(opts_.demo) {
 App::~App() { stop_threads(); }
 
 void App::prepare_widgets() {
+    log_panel_.border_gradient       = Gradient{185, 235, 0.9, 1.0};
+    node_panel_.border_gradient      = Gradient{275, 325, 0.9, 1.0};
+    speed_panel_.border_gradient     = Gradient{140, 180, 0.9, 1.0};
+    mode_panel_.border_gradient      = Gradient{25, 60, 0.9, 1.0};
+    inspector_panel_.border_gradient = Gradient{300, 345, 0.9, 1.0};
+    inspector_panel_.set_content(nullptr);
+
+    // 选中行用高饱和纯色底（渐变底会被文字背景打断，反而花）。
+    log_view_.selected_style = vatui::Style{
+        .fg_sgr = vatui::fg(vaterm::Color8{231}),
+        .bg_sgr = vatui::bg(vaterm::Rgb{40, 55, 110}),
+        .effects_sgr = vatui::effects({})};
+
+    node_list_.gradient_enabled = false;
+    node_list_.selected_style = vatui::Style{
+        .fg_sgr = vatui::fg(vaterm::Color8{231}),
+        .bg_sgr = vatui::bg(vaterm::Rgb{72, 40, 125}),
+        .effects_sgr = vatui::effects({vaterm::TextEffect::BOLD})};
+    node_list_.unfocused_selected_style = vatui::Style{
+        .fg_sgr = vatui::fg(vaterm::Color8{252}),
+        .bg_sgr = vatui::bg(vaterm::Rgb{45, 45, 62}),
+        .effects_sgr = vatui::effects({})};
+
+    mode_seg_.gradient_enabled = false;
+    mode_seg_.selected_style = vatui::Style{
+        .fg_sgr = vatui::fg(vaterm::Color8{231}),
+        .bg_sgr = vatui::bg(vaterm::Rgb{200, 80, 30}),
+        .effects_sgr = vatui::effects({vaterm::TextEffect::BOLD})};
+    mode_seg_.focus_style = vatui::Style{
+        .fg_sgr = vatui::fg(vaterm::Color8{231}),
+        .bg_sgr = vatui::bg(vaterm::Rgb{240, 120, 40}),
+        .effects_sgr = vatui::effects({vaterm::TextEffect::BOLD})};
+
     log_panel_.set_content(&log_view_);
     node_panel_.set_content(&node_list_);
     mode_panel_.set_content(&mode_seg_);
@@ -217,6 +333,12 @@ void App::prepare_demo() {
             {"♻️ 自动选择", "urltest", 921, false},
             {"DIRECT", "direct", 0, false},
         };
+        stats_.top_connections = {
+            {"www.youtube.com", "🇸🇬 新加坡01[直连]", "DomainSuffix", 1843200, 92160},
+            {"api.github.com", "🇯🇵 日本01[直连]", "GeoSite", 524288, 40960},
+            {"registry.npmjs.org", "🇭🇰 香港01[直连]", "DomainSuffix", 262144, 8192},
+            {"cdn.jsdelivr.net", "DIRECT", "DomainSuffix", 131072, 4096},
+        };
     }
 
     log_view_.clear();
@@ -251,7 +373,15 @@ void App::prepare_demo() {
         last_traffic_.valid      = true;
     }
 
-    status("演示模式：数据全部是假的，按 q 退出");
+    // 固定时间戳，保证 --snapshot 输出可复现。
+    LogLine demo_note;
+    demo_note.level = LogLevel::Info;
+    demo_note.raw   = "演示模式：数据全部是假的，按 q 退出";
+    demo_note.text  = "22:00:00 " + demo_note.raw;
+    demo_note.spans = {{"22:00:00 ", LogTone::Dim},
+                       {"▸ ", LogTone::Accent},
+                       {demo_note.raw, LogTone::Default}};
+    log_view_.push(std::move(demo_note));
 }
 
 void App::demo_tick() {
@@ -414,6 +544,32 @@ void App::poll_stats(Api& api, Stats& local, bool fetch_proxies) {
             local.connections = j.contains("connections")
                                     ? static_cast<long long>(j["connections"].size())
                                     : 0LL;
+
+            std::vector<ConnInfo> top;
+            if (j.contains("connections") && j["connections"].is_array()) {
+                for (const auto& item : j["connections"]) {
+                    ConnInfo info;
+                    if (item.contains("metadata")) {
+                        const auto& md = item["metadata"];
+                        info.host = md.value("host", std::string{});
+                        if (info.host.empty())
+                            info.host = md.value("destinationIP", std::string{});
+                    }
+                    info.down = item.value("download", 0LL);
+                    info.up   = item.value("upload", 0LL);
+                    info.rule = item.value("rule", std::string{});
+                    if (item.contains("chains") && item["chains"].is_array()
+                        && !item["chains"].empty()
+                        && item["chains"].front().is_string())
+                        info.chain = item["chains"].front().get<std::string>();
+                    top.push_back(std::move(info));
+                }
+            }
+            std::sort(top.begin(), top.end(), [](const ConnInfo& a, const ConnInfo& b) {
+                return (a.down + a.up) > (b.down + b.up);
+            });
+            if (top.size() > 8) top.resize(8);
+            local.top_connections = std::move(top);
         } catch (const nlohmann::json::exception&) {
         }
     }
@@ -548,7 +704,7 @@ void App::test_all_delays() {
         return;
     }
     if (testing_.load()) {
-        status("全局测速进行中…");
+        progress("全局测速进行中…");
         return;
     }
 
@@ -574,6 +730,7 @@ void App::test_all_delays() {
     }
     delay_cv_.notify_one();
     status("开始全局测速…");
+    progress("全局测速准备中…");
     dirty_ = true;
 }
 
@@ -654,7 +811,7 @@ void App::run_global_test(const std::string& group, std::uint64_t epoch) {
         for (const auto& name : leaves) delays_[name] = -3;
     }
     dirty_ = true;
-    status("全局测速 0/" + std::to_string(total));
+    progress("全局测速 0/" + std::to_string(total));
 
     // 8 路并发：60 个节点也不会串成 5 分钟。
     std::atomic<std::size_t> next{0};
@@ -687,8 +844,8 @@ void App::run_global_test(const std::string& group, std::uint64_t epoch) {
 
             const int finished = ++done;
             if (finished == total || finished % 2 == 0)
-                status("全局测速 " + std::to_string(finished) + "/"
-                       + std::to_string(total));
+                progress("全局测速 " + std::to_string(finished) + "/"
+                         + std::to_string(total));
             dirty_ = true;
         }
     };
@@ -832,9 +989,26 @@ void App::apply_stats_to_widgets() {
 //-- 交互 ---------------------------------------------------------------
 
 void App::status(std::string message) {
+    // 操作反馈不再长期占用底栏，而是作为一条日志跟着滚屏。
+    LogLine line;
+    const bool bad = message.find("失败") != std::string::npos
+                  || message.find("错误") != std::string::npos
+                  || message.find("不可达") != std::string::npos;
+    line.level = bad ? LogLevel::Warn : LogLevel::Info;
+    line.raw   = message;
+    const std::string time = now_hms();
+    line.text  = time + " " + message;
+    line.spans = {{time + " ", LogTone::Dim},
+                  {"▸ ", LogTone::Accent},
+                  {message, LogTone::Default}};
+    log_view_.push(std::move(line));
+    dirty_ = true;
+}
+
+void App::progress(std::string message) {
     std::lock_guard lock(status_mutex_);
-    status_text_ = std::move(message);
-    status_until_ = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+    hint_text_  = std::move(message);
+    hint_until_ = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
 }
 
 void App::begin_filter() {
@@ -1124,7 +1298,7 @@ void App::test_delay(const std::string& name) {
         delay_queue_.push_back(name);
     }
     delay_cv_.notify_one();
-    status("测速中: " + name + " …（只测速，不切换）");
+    progress("测速中: " + name + " …（只测速，不切换）");
     dirty_ = true;
 }
 
@@ -1242,15 +1416,22 @@ void App::layout() {
     if (w <= 0 || h <= 0) return;
 
     const int content_h = std::max(1, h - 1);
-    int bottom_h = std::clamp(content_h / 3, 6, 8);
-    if (content_h - bottom_h < 6) bottom_h = std::max(3, content_h - 6);
+
+    // 底部详情窗：先留出来，剩下的再按 2×2 分。
+    int inspector_h = std::clamp(content_h / 4, 6, 9);
+    if (content_h - inspector_h < 12)
+        inspector_h = std::max(3, content_h - 12);
+
+    const int upper_h = std::max(1, content_h - inspector_h);
+    int       bottom_h = std::clamp(upper_h / 3, 5, 9);
+    if (upper_h - bottom_h < 5) bottom_h = std::max(3, upper_h - 5);
 
     int left_w = (w >= 72) ? std::clamp(w * 2 / 3, 44, std::max(44, w - 24))
                            : w / 2;
     left_w = std::clamp(left_w, 10, std::max(10, w - 10));
 
-    auto [top_area, bottom_area] = split_v(Rect{0, 0, w, content_h},
-                                           content_h - bottom_h);
+    auto [upper, inspector] = split_v(Rect{0, 0, w, content_h}, upper_h);
+    auto [top_area, bottom_area] = split_v(upper, upper_h - bottom_h);
     auto [log_rect, node_rect]   = split_h(top_area, left_w);
     auto [speed_rect, mode_rect] = split_h(bottom_area, left_w);
 
@@ -1258,9 +1439,11 @@ void App::layout() {
     node_panel_.set_bounds(node_rect);
     speed_panel_.set_bounds(speed_rect);
     mode_panel_.set_bounds(mode_rect);
+    inspector_panel_.set_bounds(inspector);
     mode_seg_.set_bounds(mode_panel_.content_rect());
 
-    status_rect_ = Rect{0, content_h, w, h - content_h};
+    inspector_rect_ = inspector;
+    status_rect_    = Rect{0, content_h, w, h - content_h};
 }
 
 void App::render() {
@@ -1270,12 +1453,23 @@ void App::render() {
 
     canvas.clear(screen);
 
+    // 每个面板一个色相区间，聚焦面板跟着相位流动。
+    log_panel_.hue_shift       = hue_phase_;
+    node_list_.hue_shift       = hue_phase_ + 18;
+    mode_seg_.hue_shift        = hue_phase_ + 54;
+    up_spark_.hue_shift        = hue_phase_ + 36;
+    down_spark_.hue_shift      = hue_phase_ + 36;
+    node_panel_.hue_shift      = hue_phase_ + 18;
+    speed_panel_.hue_shift     = hue_phase_ + 36;
+    mode_panel_.hue_shift      = hue_phase_ + 54;
+    inspector_panel_.hue_shift = hue_phase_ + 72;
+
     log_panel_.render(canvas);
     node_panel_.render(canvas);
     speed_panel_.render(canvas);
     mode_panel_.render(canvas);
+    inspector_panel_.render(canvas);
 
-    // 网速面板没有可聚焦控件，内容由 App 直接画在边框里。
     {
         Rect content = speed_panel_.content_rect();
         canvas.push_clip(content);
@@ -1288,10 +1482,19 @@ void App::render() {
         render_mode(canvas, content);
         canvas.pop_clip();
     }
+    {
+        Rect content = inspector_panel_.content_rect();
+        canvas.push_clip(content);
+        render_inspector(canvas, content);
+        canvas.pop_clip();
+    }
 
     render_status(canvas, status_rect_);
     if (dropdown_) render_dropdown(canvas);
     if (help_) render_help(canvas, screen);
+
+    // 每次重绘让色相走一小步：只在有数据/操作时流动，不额外烧帧。
+    hue_phase_ = std::fmod(hue_phase_ + 6.0, 360.0);
 }
 
 void App::render_speed(Canvas& canvas, const Rect& rect) {
@@ -1388,10 +1591,126 @@ void App::render_mode(Canvas& canvas, const Rect& rect) {
     }
 }
 
+void App::render_inspector(Canvas& canvas, const Rect& rect) {
+    if (rect.empty()) return;
+    const auto& t = theme();
+
+    Stats s;
+    {
+        std::lock_guard lock(stats_mutex_);
+        s = stats_;
+    }
+
+    Widget* focus = focus_.current();
+
+    //-- 日志详情：聚焦日志面板时显示选中条目的完整内容
+    if (focus == &log_panel_) {
+        inspector_panel_.set_title("详情 · 日志");
+        auto line = log_view_.selected_line();
+        if (!line) {
+            canvas.put_text(rect.x, rect.y, "（还没有日志）", t.dim);
+            return;
+        }
+
+        std::string head = std::string("[") + level_name(line->level) + "] " + line->text;
+        int y = rect.y;
+        bool first = true;
+        for (const auto& row : wrap_text(head, rect.w)) {
+            if (y >= rect.bottom()) break;
+            canvas.put_text(rect.x, y, row, first ? level_style(line->level) : t.value);
+            first = false;
+            ++y;
+        }
+
+        if (y < rect.bottom()) {
+            canvas.put_text(rect.x, y, "── 原始日志 ──", t.dim);
+            ++y;
+        }
+        for (const auto& row : wrap_text(line->raw, rect.w)) {
+            if (y >= rect.bottom()) break;
+            canvas.put_text(rect.x, y, row, t.label);
+            ++y;
+        }
+        return;
+    }
+
+    //-- 节点详情
+    if (focus == &node_panel_) {
+        inspector_panel_.set_title("详情 · 节点");
+        const auto* item = node_list_.selected_item();
+        if (!item) {
+            canvas.put_text(rect.x, rect.y, "（没有选中节点）", t.dim);
+            return;
+        }
+
+        canvas.put_text(rect.x, rect.y, item->label, t.value);
+        int y = rect.y + 1;
+
+        std::string info;
+        for (const auto& node : s.nodes) {
+            if (node.name != item->id) continue;
+            info = "类型 " + (node.type.empty() ? std::string("—") : node.type)
+                 + " · 延迟 " + format_delay(node.delay);
+            if (node.current) info += " · 当前出口";
+            break;
+        }
+        if (info.empty()) info = item->detail;
+        if (y < rect.bottom()) {
+            canvas.put_text(rect.x, y, info, t.label);
+            ++y;
+        }
+        if (y < rect.bottom()) {
+            canvas.put_text(rect.x, y,
+                            "分组 " + (s.group.empty() ? "—" : s.group)
+                                + " · Enter 切换 · T 单测延迟",
+                            t.dim);
+        }
+        return;
+    }
+
+    //-- 其他焦点：连接概览
+    inspector_panel_.set_title("连接 · 实时");
+    if (!s.api_ok) {
+        canvas.put_text(rect.x, rect.y, "内核未运行", t.error);
+        return;
+    }
+
+    std::string summary = "连接 " + std::to_string(s.connections)
+                        + "  ·  累计 ↑" + format_bytes_short(static_cast<double>(s.up_total))
+                        + " ↓" + format_bytes_short(static_cast<double>(s.down_total));
+    canvas.put_text(rect.x, rect.y, summary, t.head);
+
+    int y = rect.y + 1;
+    if (s.top_connections.empty()) {
+        if (y < rect.bottom()) canvas.put_text(rect.x, y, "（没有活动连接）", t.dim);
+        return;
+    }
+
+    for (const auto& c : s.top_connections) {
+        if (y >= rect.bottom()) break;
+
+        std::string rate = "↓" + format_bytes_short(static_cast<double>(c.down))
+                         + " ↑" + format_bytes_short(static_cast<double>(c.up));
+        int rate_w = vaterm::utf::width(rate);
+        int host_w = std::max(8, rect.w - rate_w - 2);
+        std::string host = c.host.empty() ? "—" : c.host;
+
+        canvas.put_text(rect.x, y, elide_tail(host, host_w), t.value);
+        canvas.put_text_right(rect.right() - 1, y, rate, t.down);
+        ++y;
+    }
+}
+
 void App::render_status(Canvas& canvas, const Rect& rect) {
     if (rect.empty()) return;
     const auto& t = theme();
-    canvas.fill(rect, ' ', t.status);
+
+    // 底栏：深色底 + 彩虹字，既鲜艳又保证可读。
+    const vatui::Style bar_bg{
+        .fg_sgr = vatui::fg(vaterm::Color8{252}),
+        .bg_sgr = vatui::bg(vaterm::Rgb{18, 20, 34}),
+        .effects_sgr = vatui::effects({})};
+    canvas.fill(rect, ' ', bar_bg);
 
     std::string text;
     if (filtering_) {
@@ -1399,27 +1718,30 @@ void App::render_status(Canvas& canvas, const Rect& rect) {
     } else {
         {
             std::lock_guard lock(status_mutex_);
-            if (!status_text_.empty()
-                && std::chrono::steady_clock::now() < status_until_)
-                text = status_text_;
+            if (!hint_text_.empty() && std::chrono::steady_clock::now() < hint_until_)
+                text = hint_text_;
         }
         if (text.empty()) {
             if (rect.w >= 100)
-                text = "Tab 焦点  ↑↓ 选节点  Enter 应用  t 测速  Space 暂停  "
-                       "v 日志格式  [ ] 分组  d/r/g 模式  / 过滤  ? 帮助  q 退出";
+                text = "Tab 焦点  ↑↓ 选择  Enter 应用  t 全测  Space 暂停  "
+                       "v 格式  [ ] 分组  d/r/g 模式  ? 帮助  q 退出";
             else
                 text = "Tab 焦点 ↑↓ 选择 Enter 应用 t 全测 Space 暂停 "
                        "v 格式 / 过滤 ? 帮助 q 退出";
         }
     }
 
-    canvas.put_text(rect.x + 1, rect.y, text, t.status);
+    canvas.put_text_rainbow(rect.x + 1, rect.y, text,
+                            Gradient{185 + hue_phase_, 345 + hue_phase_, 0.78, 1.0},
+                            bar_bg);
 
     if (opts_.fps) {
         char buf[96];
         std::snprintf(buf, sizeof buf, "fps %d  %.1fms  %zuc", fps_value_,
                       frame_ms_, frame_cells_);
-        canvas.put_text_right(rect.right() - 1, rect.y, buf, t.status);
+        vatui::Style fps_style = t.status_text;
+        fps_style.bg_sgr = bar_bg.bg_sgr;
+        canvas.put_text_right(rect.right() - 1, rect.y, buf, fps_style);
     }
 }
 
@@ -1442,7 +1764,8 @@ void App::render_dropdown(Canvas& canvas) {
 
     const auto& t = theme();
     canvas.fill(dropdown_rect_, ' ', t.help_bg);
-    canvas.border(dropdown_rect_, BoxStyle::Round, t.accent, "分组", t.accent);
+    Gradient g{280 + hue_phase_, 340 + hue_phase_, 0.9, 0.95};
+    canvas.border_gradient(dropdown_rect_, BoxStyle::Round, g, "分组", g);
 
     const int rows = h - 2;
     int       top  = 0;
@@ -1468,11 +1791,15 @@ void App::render_help(Canvas& canvas, const Rect& screen) {
     Rect box{(screen.w - w) / 2, (screen.h - h) / 2, w, h};
 
     canvas.fill(box, ' ', t.help_bg);
-    canvas.border(box, BoxStyle::Double, t.accent, "快捷键", t.accent);
+    Gradient help_gradient{280 + hue_phase_, 360 + hue_phase_, 0.9, 0.95};
+    Gradient help_title = help_gradient;
+    help_title.from += 40;
+    help_title.to += 40;
+    canvas.border_gradient(box, BoxStyle::Double, help_gradient, "快捷键", help_title);
 
     const char* lines[] = {
         "Tab / Shift-Tab   切换焦点",
-        "↑ ↓               选择节点 / 滚动日志",
+        "↑ ↓               日志选行（下方看原文）/ 节点移动",
         "Enter             应用选中的节点",
         "t                 全部节点测速（自动切回原节点）",
         "T                 只测当前行",
@@ -1482,7 +1809,7 @@ void App::render_help(Canvas& canvas, const Rect& screen) {
         "d / r / g         直连 / 规则 / 全局",
         "/                 过滤当前面板（子串）",
         "PgUp PgDn Home End 日志翻页 / 跳转",
-        "鼠标              点击选中，双击应用，滚轮滚动",
+        "鼠标              点日志行看详情；点节点选中，再点应用；滚轮滚动",
         "?                 打开 / 关闭本帮助",
         "q / Ctrl-C        退出",
     };
@@ -1561,20 +1888,27 @@ int App::run() {
 
         if (demo_) demo_tick();
 
+        const bool input_force = (event.inputType != InputType::NON);
         apply_stats_to_widgets();
 
-        if (dirty_.exchange(false)) {
+        auto now = std::chrono::steady_clock::now();
+        const bool due = input_force
+                      || now - last_render_ >= std::chrono::milliseconds(150);
+
+        // 数据驱动的重绘限速到 ~6fps，避免日志刷屏时整屏狂刷；按键立即出帧。
+        if (dirty_.load() && due) {
+            dirty_ = false;
             auto begin = std::chrono::steady_clock::now();
             render();
             fb.swap();
             auto end = std::chrono::steady_clock::now();
+            last_render_ = end;
 
             frame_ms_    = std::chrono::duration<double, std::milli>(end - begin).count();
             frame_cells_ = fb.last_composed_cells();
             ++frame_count_;
         }
 
-        auto now = std::chrono::steady_clock::now();
         if (now - fps_since_ >= std::chrono::seconds(1)) {
             fps_value_ = static_cast<int>(frame_count_);
             frame_count_ = 0;
@@ -1594,6 +1928,7 @@ int App::snapshot() {
     auto& tui = vatui::VaTui::instance();
     auto& fb  = tui.buffer();
 
+    hue_phase_ = 0.0;
     const int w = opts_.cols > 0 ? opts_.cols : 80;
     const int h = opts_.rows > 0 ? opts_.rows : 24;
     fb.setSize({w, h});
@@ -1612,7 +1947,7 @@ int App::snapshot() {
 
     {
         std::lock_guard lock(status_mutex_);
-        status_text_.clear();
+        hint_text_.clear();
     }
     last_names_sig_.clear();
     apply_stats_to_widgets();

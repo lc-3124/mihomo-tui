@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <deque>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -37,6 +38,7 @@ enum class LogTone {
     Reject,  ///< REJECT / DROP
     Warn,
     Error,
+    Accent,  ///< App 自己产生的提示（操作日志）
 };
 
 /** @brief 带语义色的文本片段。 */
@@ -70,8 +72,14 @@ class LogView : public Widget {
     /** @brief 是否处于暂停（!follow）。 */
     bool paused() const { return !following(); }
 
-    /** @brief 正数向旧（上）滚，负数向新（下）滚。 */
+    /** @brief 移动选中行：正数向旧（上），负数向新（下）。 */
     void scroll(int delta);
+
+    /** @brief 当前选中的日志（副本）；没有可选项时 nullopt。 */
+    std::optional<LogLine> selected_line() const;
+
+    /** @brief 选中行在过滤视图里的下标；无选中为 -1。 */
+    int selected_index() const;
     void page_up(int page);
     void page_down(int page);
     void to_top();
@@ -91,6 +99,8 @@ class LogView : public Widget {
     void render(Canvas& canvas) override;
     bool on_event(const vaterm::InputData& event) override;
 
+    vatui::Style selected_style{}; ///< 选中行背景
+
     vatui::Style debug_style{};
     vatui::Style info_style{};
     vatui::Style warn_style{};
@@ -104,8 +114,12 @@ class LogView : public Widget {
     vatui::Style out_style{};
     vatui::Style direct_style{};
     vatui::Style reject_style{};
+    vatui::Style accent_style{};
 
   private:
+    /** @brief 点击选中可见区第 row 行。 */
+    void select_row(int row);
+
     bool matches(const LogLine& line) const;
     const vatui::Style& tone_style(LogTone tone) const;
     std::vector<const LogLine*> filtered_locked() const;
@@ -113,11 +127,12 @@ class LogView : public Widget {
     mutable std::mutex  mutex_;
     std::deque<LogLine> lines_;
     std::size_t         capacity_;
-    int                 offset_    = 0;     ///< 距底部的行数
     bool                follow_    = true;
     std::string         filter_;
     int                 page_lines_ = 10;
     bool                verbose_    = false;
+    int                 top_        = 0;  ///< 可见区首行（过滤视图下标）
+    int                 selected_   = -1; ///< 选中行（过滤视图下标）
 };
 
 } // namespace vawk::widget

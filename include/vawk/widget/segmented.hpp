@@ -38,6 +38,11 @@ class Segmented : public Widget {
     void render(Canvas& canvas) override;
     bool on_event(const vaterm::InputData& event) override;
 
+    bool     gradient_enabled = true;
+    Gradient selected_gradient{30, 90, 0.95, 0.55};
+    double   hue_shift = 0.0;
+    vatui::Style selected_fg{};
+
     vatui::Style normal_style{};
     vatui::Style selected_style{};
     vatui::Style focus_style{};

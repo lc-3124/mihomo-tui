@@ -34,6 +34,11 @@ class Sparkline {
     /** @brief 把曲线画进 rect（高度只用第 0 行，宽度决定采样数）。 */
     void render(Canvas& canvas, Rect rect, const vatui::Style& style) const;
 
+    //-- 彩色渐变
+    bool     gradient_enabled = true;
+    Gradient gradient{170, 300, 0.9, 1.0};
+    double   hue_shift = 0.0;
+
   private:
     std::deque<double> values_;
     std::size_t        window_;

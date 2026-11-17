@@ -218,14 +218,18 @@ void test_log_view() {
     view.set_follow(false);
     view.scroll(2);
     lines = render(view, 10, 3);
-    CHECK_EQ(lines[0], "L0");
-    CHECK_EQ(lines[2], "L2");
+    // 从底部往上两行：选中 L2，视口保持 L2..L4。
+    CHECK_EQ(lines[0], "L2");
+    CHECK_EQ(lines[2], "L4");
+    CHECK(view.selected_line());
+    CHECK_EQ(view.selected_line()->text, "L2");
 
-    // 暂停后新行到达，屏幕内容不能动。
+    // 暂停后新行到达，屏幕内容不能动、选中行也不能变。
     view.push(LogLevel::Info, "L5");
     lines = render(view, 10, 3);
-    CHECK_EQ(lines[0], "L0");
-    CHECK_EQ(lines[2], "L2");
+    CHECK_EQ(lines[0], "L2");
+    CHECK_EQ(lines[2], "L4");
+    CHECK_EQ(view.selected_line()->text, "L2");
 
     // 恢复跟随 → 贴底。
     view.set_follow(true);

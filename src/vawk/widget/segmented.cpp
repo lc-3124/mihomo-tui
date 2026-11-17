@@ -19,6 +19,9 @@ Segmented::Segmented(std::vector<std::string> labels, int selected)
     focus_style    = vatui::Style{.fg_sgr = vatui::fg(vaterm::Color8{231}),
                                   .bg_sgr = vatui::bg(vaterm::Color8{24}),
                                   .effects_sgr = vatui::effects({vaterm::TextEffect::BOLD})};
+    selected_fg = vatui::Style{.fg_sgr = vatui::fg(vaterm::Color8{231}),
+                               .bg_sgr = vatui::bg(vaterm::TRANS),
+                               .effects_sgr = vatui::effects({vaterm::TextEffect::BOLD})};
     set_selected(selected, false);
 }
 
@@ -72,7 +75,16 @@ void Segmented::render(Canvas& canvas) {
         bool        sel   = (i == selected_);
         const auto& style = sel ? (focused ? focus_style : selected_style) : normal_style;
         std::string text  = " " + label + " ";
-        canvas.put_text(x, bounds_.y, text, style);
+        if (sel && gradient_enabled) {
+            Gradient g = selected_gradient;
+            g.from += static_cast<double>(i) * 55;
+            g.to    = g.from + 70;
+            g.phase += hue_shift;
+            canvas.fill_gradient(Rect{x, bounds_.y, vaterm::utf::width(text), 1}, g);
+            canvas.put_text(x, bounds_.y, text, selected_fg);
+        } else {
+            canvas.put_text(x, bounds_.y, text, style);
+        }
         x += vaterm::utf::width(text);
     }
 }

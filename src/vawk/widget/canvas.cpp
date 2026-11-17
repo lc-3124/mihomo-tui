@@ -3,7 +3,9 @@
 #include "vawk/widget/canvas.hpp"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
+#include <unordered_map>
 
 namespace vawk::widget {
 
@@ -175,6 +177,263 @@ void Canvas::border(Rect r, BoxStyle style, const vatui::Style& line_style,
         t += ' ';
         if (vaterm::utf::width(t) <= r.w - 4)
             put_text(r.x + 2, r.y, t, title_style);
+    }
+}
+
+
+namespace {
+
+double wrap_hue(double hue) {
+    hue = std::fmod(hue, 360.0);
+    if (hue < 0) hue += 360.0;
+    return hue;
+}
+
+struct Rgb8 {
+    int r = 0, g = 0, b = 0;
+};
+
+Rgb8 hsv_to_rgb(double h, double s, double v) {
+    h = wrap_hue(h) / 60.0;
+    s = std::clamp(s, 0.0, 1.0);
+    v = std::clamp(v, 0.0, 1.0);
+
+    double c = v * s;
+    double x = c * (1.0 - std::fabs(std::fmod(h, 2.0) - 1.0));
+    double m = v - c;
+
+    double r = 0, g = 0, b = 0;
+    if (h < 1)      { r = c; g = x; }
+    else if (h < 2) { r = x; g = c; }
+    else if (h < 3) { g = c; b = x; }
+    else if (h < 4) { g = x; b = c; }
+    else if (h < 5) { r = x; b = c; }
+    else            { r = c; b = x; }
+
+    return {static_cast<int>((r + m) * 255.0 + 0.5),
+            static_cast<int>((g + m) * 255.0 + 0.5),
+            static_cast<int>((b + m) * 255.0 + 0.5)};
+}
+
+// 色桶：色相 5°、饱和/明度 5%，让相邻单元格复用同一个 SGR，
+// 既保留渐变观感，又不至于每格一个转义序列。
+constexpr int kHueBucket = 5;
+constexpr int kSvBucket  = 20;
+
+vatui::Style gradient_style(double hue, double sat, double val, bool background) {
+    static std::unordered_map<int, vatui::Style> cache;
+
+    int hb = static_cast<int>(wrap_hue(hue) / kHueBucket) % (360 / kHueBucket);
+    int sb = std::clamp(static_cast<int>(sat * kSvBucket + 0.5), 0, kSvBucket);
+    int vb = std::clamp(static_cast<int>(val * kSvBucket + 0.5), 0, kSvBucket);
+
+    int key = (hb << 12) | (sb << 6) | vb | (background ? 1 << 18 : 0);
+    if (auto it = cache.find(key); it != cache.end()) return it->second;
+
+    Rgb8 rgb = hsv_to_rgb(hb * kHueBucket, sb / double(kSvBucket),
+                          vb / double(kSvBucket));
+    vaterm::Rgb c{static_cast<uint8_t>(rgb.r), static_cast<uint8_t>(rgb.g),
+                  static_cast<uint8_t>(rgb.b)};
+
+    vatui::Style style;
+    if (background) style.bg_sgr = vatui::bg(c);
+    else            style.fg_sgr = vatui::fg(c);
+    cache.emplace(key, style);
+    return style;
+}
+
+int hue_bucket(double hue) {
+    return static_cast<int>(wrap_hue(hue) / kHueBucket) % (360 / kHueBucket);
+}
+
+double hue_at(const Gradient& g, int index, int length) {
+    if (length <= 1) return g.from + g.phase;
+    double t = double(index) / double(length - 1);
+    return g.from + (g.to - g.from) * t + g.phase;
+}
+
+} // namespace
+
+vatui::Style Canvas::hsv(double hue, double sat, double val, bool background) {
+    return gradient_style(hue, sat, val, background);
+}
+
+void Canvas::fill_gradient(Rect r, const Gradient& gradient) {
+    Rect area = intersect(r, clip_rect());
+    if (area.empty()) return;
+
+    const int length = gradient.vertical ? area.h : area.w;
+    int       i      = 0;
+    while (i < length) {
+        const double hue = hue_at(gradient, i, length);
+        const int    b   = hue_bucket(hue);
+
+        int j = i + 1;
+        while (j < length && hue_bucket(hue_at(gradient, j, length)) == b) ++j;
+
+        const std::string spaces(static_cast<std::size_t>(j - i), ' ');
+        const vatui::Style style = gradient_style(hue, gradient.sat, gradient.val, true);
+
+        if (gradient.vertical)
+            put_text(area.x, area.y + i, spaces, style);
+        else
+            put_text(area.x + i, area.y, spaces, style);
+
+        i = j;
+    }
+}
+
+void Canvas::put_text_rainbow(int col, int row, std::string_view text,
+                              const Gradient& gradient, const vatui::Style& base) {
+    if (text.empty()) return;
+    const int total = vaterm::utf::width(text);
+    if (total <= 0) return;
+
+    std::string run;
+    int         run_col = col;
+    int         run_bucket = -1;
+    int         offset = 0;
+
+    auto make_style = [&](int at) {
+        vatui::Style style =
+            gradient_style(hue_at(gradient, at, total), gradient.sat,
+                           gradient.val, false);
+        style.bg_sgr      = base.bg_sgr;
+        style.effects_sgr = base.effects_sgr;
+        return style;
+    };
+
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        std::size_t n = vaterm::utf::char_bytes(text.substr(pos));
+        if (n == 0) { ++pos; continue; }
+        if (pos + n > text.size()) break;
+
+        int w = vaterm::utf::char_width(text.substr(pos));
+        if (w < 1) w = 1;
+
+        const int b = hue_bucket(hue_at(gradient, offset, total));
+        if (run_bucket >= 0 && b != run_bucket) {
+            put_text(run_col, row, run, make_style(run_col - col));
+            run.clear();
+        }
+        if (run.empty()) { run_col = col + offset; run_bucket = b; }
+
+        run.append(text.substr(pos, n));
+        offset += w;
+        pos += n;
+    }
+    if (!run.empty()) put_text(run_col, row, run, make_style(run_col - col));
+}
+
+void Canvas::put_text_gradient(int col, int row, std::string_view text,
+                               const Gradient& gradient) {
+    if (text.empty()) return;
+
+    const int total = vaterm::utf::width(text);
+    if (total <= 0) return;
+
+    std::string run;
+    int         run_col = col;
+    int         run_bucket = -1;
+    int         offset = 0;
+
+    std::size_t pos = 0;
+    while (pos < text.size()) {
+        std::size_t n = vaterm::utf::char_bytes(text.substr(pos));
+        if (n == 0) { ++pos; continue; }
+        if (pos + n > text.size()) break;
+
+        int w = vaterm::utf::char_width(text.substr(pos));
+        if (w < 1) w = 1;
+
+        const double hue = hue_at(gradient, offset, total);
+        const int    b   = hue_bucket(hue);
+
+        if (run_bucket >= 0 && b != run_bucket) {
+            put_text(run_col, row, run,
+                     gradient_style(hue_at(gradient, run_col - col, total),
+                                    gradient.sat, gradient.val, false));
+            run.clear();
+            run_col = col + offset;
+        }
+        if (run.empty()) { run_col = col + offset; run_bucket = b; }
+
+        run.append(text.substr(pos, n));
+        offset += w;
+        pos += n;
+    }
+
+    if (!run.empty())
+        put_text(run_col, row, run,
+                 gradient_style(hue_at(gradient, run_col - col, total),
+                                gradient.sat, gradient.val, false));
+}
+
+void Canvas::border_gradient(Rect r, BoxStyle style, const Gradient& gradient,
+                             std::string_view title, Gradient title_gradient) {
+    if (r.w < 2 || r.h < 2) return;
+    if (style == BoxStyle::None) {
+        if (!title.empty()) put_text_gradient(r.x + 1, r.y, title, title_gradient);
+        return;
+    }
+
+    const BoxChars b = box_chars(style);
+    const int      w = r.w;
+    const int      h = r.h;
+
+    auto draw_edge = [&](int y, int x0, int len, std::string_view ch, double h0,
+                         double h1) {
+        int i = 0;
+        while (i < len) {
+            double hue = h0 + (h1 - h0) * (len <= 1 ? 0.0 : double(i) / (len - 1))
+                       + gradient.phase;
+            int bucket = hue_bucket(hue);
+            int j = i + 1;
+            while (j < len) {
+                double hh = h0 + (h1 - h0) * (len <= 1 ? 0.0 : double(j) / (len - 1))
+                          + gradient.phase;
+                if (hue_bucket(hh) != bucket) break;
+                ++j;
+            }
+            put_text(x0 + i, y, repeat(ch, j - i),
+                     gradient_style(hue, gradient.sat, gradient.val, false));
+            i = j;
+        }
+    };
+
+    draw_edge(r.y, r.x, w, b.h, gradient.from, gradient.to);
+    draw_edge(r.bottom() - 1, r.x, w, b.h, gradient.to, gradient.from);
+
+    for (int y = r.y + 1; y < r.bottom() - 1; ++y) {
+        double t = double(y - r.y) / double(h - 1);
+        double hue = gradient.from + (gradient.to - gradient.from) * t + gradient.phase;
+        put_text(r.x, y, b.v, gradient_style(hue, gradient.sat, gradient.val, false));
+        put_text(r.right() - 1, y, b.v,
+                 gradient_style(hue, gradient.sat, gradient.val, false));
+    }
+
+    put_text(r.x, r.y, b.tl, gradient_style(gradient.from + gradient.phase,
+                                            gradient.sat, gradient.val, false));
+    put_text(r.right() - 1, r.y, b.tr,
+             gradient_style(gradient.to + gradient.phase, gradient.sat, gradient.val, false));
+    put_text(r.x, r.bottom() - 1, b.bl,
+             gradient_style(gradient.to + gradient.phase, gradient.sat, gradient.val, false));
+    put_text(r.right() - 1, r.bottom() - 1, b.br,
+             gradient_style(gradient.from + gradient.phase, gradient.sat, gradient.val, false));
+
+    if (!title.empty() && r.w > 6) {
+        std::string t = " ";
+        t += title;
+        t += ' ';
+        if (vaterm::utf::width(t) <= r.w - 4) {
+            if (title_gradient.from == 0 && title_gradient.to == 0) {
+                title_gradient.from = gradient.from;
+                title_gradient.to   = gradient.to;
+            }
+            title_gradient.phase += gradient.phase;
+            put_text_gradient(r.x + 2, r.y, t, title_gradient);
+        }
     }
 }
 

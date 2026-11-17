@@ -44,6 +44,9 @@ ListView::ListView() {
     empty_style = vatui::Style{.fg_sgr = vatui::fg(vaterm::Color8{243}),
                                .bg_sgr = vatui::bg(vaterm::TRANS),
                                .effects_sgr = vatui::effects({vaterm::TextEffect::DIM})};
+    selected_fg = vatui::Style{.fg_sgr = vatui::fg(vaterm::Color8{231}),
+                               .bg_sgr = vatui::bg(vaterm::TRANS),
+                               .effects_sgr = vatui::effects({vaterm::TextEffect::BOLD})};
 }
 
 void ListView::set_items(std::vector<ListItem> items) {
@@ -160,11 +163,19 @@ void ListView::render(Canvas& canvas) {
             v[static_cast<std::size_t>(vi)])];
         bool sel = (vi == selected_);
 
-        const auto& row_style = sel ? (focused ? selected_style : unfocused_selected_style)
+        const bool  gradient_row = sel && gradient_enabled && focused;
+        const auto& row_style = gradient_row ? selected_fg
+                              : sel ? (focused ? selected_style : unfocused_selected_style)
                                     : normal_style;
 
         // 整行铺底，选中态才有整条高亮。
-        canvas.fill(Rect{bounds_.x, bounds_.y + r, bounds_.w, 1}, ' ', row_style);
+        if (gradient_row) {
+            Gradient g = selected_gradient;
+            g.phase += hue_shift;
+            canvas.fill_gradient(Rect{bounds_.x, bounds_.y + r, bounds_.w, 1}, g);
+        } else {
+            canvas.fill(Rect{bounds_.x, bounds_.y + r, bounds_.w, 1}, ' ', row_style);
+        }
 
         int detail_w = vaterm::utf::width(item.detail);
         int label_w  = std::max(0, bounds_.w - 2 - (detail_w ? detail_w + 1 : 0));

@@ -25,6 +25,21 @@ namespace vawk::widget {
 enum class BoxStyle { None, Single, Double, Round };
 
 /**
+ * @brief 一条色相渐变。
+ *
+ * 颜色在 HSV 空间按位置插值；`vertical` 控制方向。渐变会被量化到固定数量的
+ * 色桶，这样相邻单元格共享 SGR，输出不会因为「每格一个颜色」而爆炸。
+ */
+struct Gradient {
+    double from     = 190;
+    double to       = 250;
+    double sat      = 0.85;
+    double val      = 1.0;
+    bool   vertical = false;
+    double phase    = 0.0; ///< 整体色相偏移（用于动画）
+};
+
+/**
  * @brief 裁剪绘制面。
  * @note 构造时的 clip 是初始裁剪区，通常就是整屏。
  *       所有绘制函数都只在当前裁剪区内落笔。
@@ -82,6 +97,31 @@ class Canvas {
      */
     void border(Rect r, BoxStyle style, const vatui::Style& line_style,
                 std::string_view title = {}, const vatui::Style& title_style = {});
+
+    //-- 渐变
+
+    /** @brief HSV 取色（带色桶缓存），供控件做自定义渐变。 */
+    static vatui::Style hsv(double hue, double sat, double val, bool background = false);
+
+    /** @brief 用渐变背景铺满矩形。 */
+    void fill_gradient(Rect r, const Gradient& gradient);
+
+    /** @brief 渐变文字：每个字符按其在文本中的位置取色。 */
+    void put_text_gradient(int col, int row, std::string_view text,
+                           const Gradient& gradient);
+
+    /**
+     * @brief 渐变文字 + 固定背景（base.bg_sgr / effects_sgr 照搬）。
+     * @note 直接给 put_text_gradient 用透明背景会把底栏渐变「打出洞」，
+     *       所以这里显式带一个底色。
+     */
+    void put_text_rainbow(int col, int row, std::string_view text,
+                          const Gradient& gradient, const vatui::Style& base);
+
+    /** @brief 渐变边框；标题也用渐变绘制。 */
+    void border_gradient(Rect r, BoxStyle style, const Gradient& gradient,
+                         std::string_view title = {},
+                         Gradient title_gradient = {});
 
     //-- 裁剪栈
 

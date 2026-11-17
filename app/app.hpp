@@ -72,6 +72,14 @@ class App {
         bool        current = false;
     };
 
+    struct ConnInfo {
+        std::string host;
+        std::string chain;
+        std::string rule;
+        long long   up   = 0;
+        long long   down = 0;
+    };
+
     struct Stats {
         bool                     api_ok = false;
         std::string              error;
@@ -85,6 +93,7 @@ class App {
         long long                connections = 0;
         long long                up_total    = 0;
         long long                down_total  = 0;
+        std::vector<ConnInfo>    top_connections;
     };
 
     //-- 生命周期
@@ -129,13 +138,16 @@ class App {
                       const vawk::widget::Rect& rect);
     void render_mode(vawk::widget::Canvas& canvas,
                      const vawk::widget::Rect& rect);
+    void render_inspector(vawk::widget::Canvas& canvas,
+                          const vawk::widget::Rect& rect);
     void render_status(vawk::widget::Canvas& canvas,
                        const vawk::widget::Rect& rect);
     void render_help(vawk::widget::Canvas& canvas,
                      const vawk::widget::Rect& rect);
 
-    //-- 状态栏消息
+    //-- 消息：status 写进日志，progress 短暂占用底栏
     void status(std::string message);
+    void progress(std::string message);
 
     AppOptions opts_;
     bool       demo_ = false;
@@ -145,6 +157,7 @@ class App {
     vawk::widget::Panel       node_panel_{"节点"};
     vawk::widget::Panel       speed_panel_{"网速"};
     vawk::widget::Panel       mode_panel_{"模式"};
+    vawk::widget::Panel       inspector_panel_{"详情"};
     vawk::widget::LogView     log_view_{5000};
     vawk::widget::ListView    node_list_;
     vawk::widget::Segmented   mode_seg_{{"直连", "规则", "全局"}, 1};
@@ -186,6 +199,7 @@ class App {
     // 交互状态
     std::atomic<bool> dirty_{true};
     vawk::widget::Rect status_rect_{};
+    vawk::widget::Rect inspector_rect_{};
     bool        running_   = true;
     bool        help_      = false;
     bool        dropdown_  = false;
@@ -196,8 +210,12 @@ class App {
     std::string filter_panel_; ///< "log" 或 "node"
 
     std::mutex  status_mutex_;
-    std::string status_text_;
-    std::chrono::steady_clock::time_point status_until_{};
+    std::string hint_text_;
+    std::chrono::steady_clock::time_point hint_until_{};
+
+    // 渐变相位：让聚焦面板的边框缓慢流动
+    double hue_phase_ = 0.0;
+    std::chrono::steady_clock::time_point last_render_{};
 
     // 帧统计
     std::chrono::steady_clock::time_point demo_since_{};

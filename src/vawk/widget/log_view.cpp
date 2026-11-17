@@ -58,6 +58,12 @@ LogView::LogView(std::size_t capacity) : capacity_(capacity ? capacity : 1) {
     reject_style = vatui::Style{.fg_sgr = vatui::fg(vaterm::Color8{203}),
                                 .bg_sgr = vatui::bg(vaterm::TRANS),
                                 .effects_sgr = vatui::effects({vaterm::TextEffect::BOLD})};
+    accent_style = vatui::Style{.fg_sgr = vatui::fg(vaterm::Color8{213}),
+                                .bg_sgr = vatui::bg(vaterm::TRANS),
+                                .effects_sgr = vatui::effects({vaterm::TextEffect::BOLD})};
+    selected_style = vatui::Style{.fg_sgr = vatui::fg(vaterm::Color8{231}),
+                                  .bg_sgr = vatui::bg(vaterm::Color8{25}),
+                                  .effects_sgr = vatui::effects({})};
 }
 
 const vatui::Style& LogView::tone_style(LogTone tone) const {
@@ -68,6 +74,7 @@ const vatui::Style& LogView::tone_style(LogTone tone) const {
     case LogTone::Out:    return out_style;
     case LogTone::Direct: return direct_style;
     case LogTone::Reject: return reject_style;
+    case LogTone::Accent: return accent_style;
     case LogTone::Warn:   return warn_style;
     case LogTone::Error:  return error_style;
     case LogTone::Default: break;
@@ -82,12 +89,10 @@ bool LogView::matches(const LogLine& line) const {
 
 void LogView::push(LogLine line) {
     std::lock_guard lock(mutex_);
-    bool matched = matches(line);
     lines_.push_back(std::move(line));
-    // 从头部淘汰不改变「距底部的行数」，offset 不用动。
     while (lines_.size() > capacity_) lines_.pop_front();
-    // 暂停时新行把内容往下顶，offset 自增以保持屏幕内容不动。
-    if (!follow_ && matched) ++offset_;
+    // follow 时选中行在 render 里贴到最新；暂停时 selected_ 是视图下标，
+    // 新行追加在末尾，不会改变已选中的那一行。
 }
 
 void LogView::push(LogLevel level, std::string text) {
@@ -101,8 +106,9 @@ void LogView::push(LogLevel level, std::string text) {
 void LogView::clear() {
     std::lock_guard lock(mutex_);
     lines_.clear();
-    offset_ = 0;
-    follow_ = true;
+    top_      = 0;
+    selected_ = -1;
+    follow_   = true;
 }
 
 std::size_t LogView::size() const {
@@ -113,7 +119,8 @@ std::size_t LogView::size() const {
 void LogView::set_follow(bool follow) {
     std::lock_guard lock(mutex_);
     follow_ = follow;
-    if (follow) offset_ = 0;
+    if (follow) selected_ = -1; // render 时贴到最后一行
+    else if (selected_ < 0) selected_ = static_cast<int>(filtered_locked().size()) - 1;
 }
 
 bool LogView::following() const {
@@ -124,8 +131,14 @@ bool LogView::following() const {
 void LogView::scroll(int delta) {
     std::lock_guard lock(mutex_);
     if (delta == 0) return;
-    offset_ = std::max(0, offset_ + delta);
-    follow_ = (offset_ == 0);
+
+    const int total = static_cast<int>(filtered_locked().size());
+    if (total == 0) return;
+
+    if (selected_ < 0) selected_ = total - 1;
+    follow_   = false;
+    // delta > 0 表示往旧的方向（视图下标更小）。
+    selected_ = std::clamp(selected_ - delta, 0, total - 1);
 }
 
 void LogView::page_up(int page) {
@@ -140,21 +153,23 @@ void LogView::page_down(int page) {
 
 void LogView::to_top() {
     std::lock_guard lock(mutex_);
-    offset_ = static_cast<int>(lines_.size());
-    follow_ = false;
+    follow_   = false;
+    selected_ = 0;
+    top_      = 0;
 }
 
 void LogView::to_bottom() {
     std::lock_guard lock(mutex_);
-    offset_ = 0;
-    follow_ = true;
+    follow_   = true;
+    selected_ = -1;
 }
 
 void LogView::set_filter(std::string filter) {
     std::lock_guard lock(mutex_);
-    filter_ = std::move(filter);
-    offset_ = 0;
-    follow_ = true;
+    filter_   = std::move(filter);
+    top_      = 0;
+    selected_ = -1;
+    follow_   = true;
 }
 
 void LogView::set_verbose(bool verbose) {
@@ -165,6 +180,24 @@ void LogView::set_verbose(bool verbose) {
 bool LogView::verbose() const {
     std::lock_guard lock(mutex_);
     return verbose_;
+}
+
+std::optional<LogLine> LogView::selected_line() const {
+    std::lock_guard lock(mutex_);
+    const auto view = filtered_locked();
+    if (view.empty()) return std::nullopt;
+    int index = selected_;
+    if (follow_ || index < 0) index = static_cast<int>(view.size()) - 1;
+    index = std::clamp(index, 0, static_cast<int>(view.size()) - 1);
+    return *view[static_cast<std::size_t>(index)];
+}
+
+int LogView::selected_index() const {
+    std::lock_guard lock(mutex_);
+    const int total = static_cast<int>(filtered_locked().size());
+    if (total == 0) return -1;
+    if (follow_ || selected_ < 0) return total - 1;
+    return std::clamp(selected_, 0, total - 1);
 }
 
 std::vector<const LogLine*> LogView::filtered_locked() const {
@@ -192,18 +225,34 @@ void LogView::render(Canvas& canvas) {
     }
 
     const int total = static_cast<int>(view.size());
-    if (follow_) offset_ = 0;
-    // 留一行余量，避免「滚到最上时最后一行刚好被裁掉」的错觉。
-    int max_off = std::max(0, total - 1);
-    offset_ = std::clamp(offset_, 0, max_off);
 
-    int end   = total - offset_;
-    int begin = std::max(0, end - rows);
-    if (end <= begin) return;
+    if (follow_) {
+        selected_ = total - 1;
+        top_      = std::max(0, total - rows);
+    } else {
+        selected_ = std::clamp(selected_, 0, total - 1);
+        if (selected_ < top_) top_ = selected_;
+        if (selected_ >= top_ + rows) top_ = selected_ - rows + 1;
+        top_ = std::clamp(top_, 0, std::max(0, total - 1));
+    }
 
-    for (int i = begin; i < end; ++i) {
-        const LogLine* line = view[static_cast<std::size_t>(i)];
-        const int      row  = bounds_.y + (i - begin);
+    for (int r = 0; r < rows; ++r) {
+        const int index = top_ + r;
+        if (index >= total) break;
+
+        const LogLine* line = view[static_cast<std::size_t>(index)];
+        const int      row  = bounds_.y + r;
+        const bool     is_selected = (index == selected_);
+
+        if (is_selected) canvas.fill(Rect{bounds_.x, row, bounds_.w, 1}, ' ', selected_style);
+
+        // 选中行要让文字本身也带上选中背景，否则每个字形都会把背景「打出洞」。
+        auto with_bg = [&](const vatui::Style& base) {
+            if (!is_selected) return base;
+            vatui::Style style = base;
+            style.bg_sgr       = selected_style.bg_sgr;
+            return style;
+        };
 
         if (verbose_ || line->spans.empty()) {
             const auto& style = line->level == LogLevel::Error ? error_style
@@ -211,17 +260,26 @@ void LogView::render(Canvas& canvas) {
                               : line->level == LogLevel::Debug ? debug_style
                                                               : info_style;
             canvas.put_text(bounds_.x, row,
-                            verbose_ ? line->raw : line->text, style);
+                            verbose_ ? line->raw : line->text, with_bg(style));
             continue;
         }
 
         int col = bounds_.x;
         for (const auto& span : line->spans) {
             if (col >= bounds_.right()) break;
-            canvas.put_text(col, row, span.text, tone_style(span.tone));
+            canvas.put_text(col, row, span.text, with_bg(tone_style(span.tone)));
             col += vaterm::utf::width(span.text);
         }
     }
+}
+
+void LogView::select_row(int row) {
+    std::lock_guard lock(mutex_);
+    const int total = static_cast<int>(filtered_locked().size());
+    if (total == 0) return;
+    const int index = std::clamp(top_ + row, 0, total - 1);
+    selected_ = index;
+    follow_   = (index == total - 1);
 }
 
 bool LogView::on_event(const vaterm::InputData& event) {
@@ -248,6 +306,11 @@ bool LogView::on_event(const vaterm::InputData& event) {
         if (!bounds_.contains(m.col, m.row)) return false;
         if (m.action == vaterm::MouseAction::SCROLL_UP) { scroll(3); return true; }
         if (m.action == vaterm::MouseAction::SCROLL_DOWN) { scroll(-3); return true; }
+        if (m.action == vaterm::MouseAction::PRESS
+            && m.button == vaterm::MouseButton::LEFT) {
+            select_row(m.row - bounds_.y);
+            return true;
+        }
     }
     return false;
 }

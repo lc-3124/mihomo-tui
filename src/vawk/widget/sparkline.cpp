@@ -53,7 +53,15 @@ void Sparkline::render(Canvas& canvas, Rect rect, const vatui::Style& style) con
             idx = std::clamp(idx, 0, 7);
             if (v > 0 && idx == 0) idx = 1; // 非零不要画成最低档的空心
         }
-        canvas.put_text(x0 + static_cast<int>(i), rect.y, kBlocks[idx], style);
+        if (gradient_enabled) {
+            double t = static_cast<double>(idx) / 7.0;
+            double hue = gradient.from + (gradient.to - gradient.from) * t
+                       + gradient.phase + hue_shift;
+            canvas.put_text(x0 + static_cast<int>(i), rect.y, kBlocks[idx],
+                            Canvas::hsv(hue, gradient.sat, gradient.val));
+        } else {
+            canvas.put_text(x0 + static_cast<int>(i), rect.y, kBlocks[idx], style);
+        }
     }
 }
 

@@ -41,6 +41,12 @@ class Panel : public Widget {
     /** @brief 焦点标记；内容控件会同步获得同样的标记。 */
     void set_focused(bool value) override;
 
+    /** @brief 彩色边框：色相从 border_gradient.from 渐变到 to。 */
+    Gradient border_gradient{200, 240, 0.85, 1.0};
+    /** @brief 整体色相偏移，App 用来做缓慢流动的动画。 */
+    double   hue_shift = 0.0;
+    bool     gradient_enabled = true;
+
     /** @brief 边框/标题/焦点配色，默认即可，留出定制口。 */
     vatui::Style line_style{};
     vatui::Style title_style{};

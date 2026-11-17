@@ -65,10 +65,23 @@ void Panel::render(Canvas& canvas) {
     if (bounds_.empty()) return;
     canvas.clear(bounds_);
 
-    const auto& line  = focused ? focus_line_style : line_style;
-    const auto& title = focused ? focus_title_style : title_style;
+    if (gradient_enabled) {
+        Gradient g = border_gradient;
+        g.phase += hue_shift;
+        g.sat = focused ? 1.0 : 0.62;
+        g.val = focused ? 1.0 : 0.80;
 
-    canvas.border(bounds_, style_, line, title_, title);
+        Gradient tg = g;
+        tg.from = g.from + 35;
+        tg.to   = g.to + 35;
+        tg.sat  = focused ? 0.95 : 0.78;
+
+        canvas.border_gradient(bounds_, style_, g, title_, tg);
+    } else {
+        const auto& line  = focused ? focus_line_style : line_style;
+        const auto& title = focused ? focus_title_style : title_style;
+        canvas.border(bounds_, style_, line, title_, title);
+    }
 
     if (!badge_.empty() && bounds_.w > 8)
         canvas.put_text_right(bounds_.right() - 3, bounds_.y, " " + badge_ + " ",
