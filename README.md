@@ -160,10 +160,12 @@ mihomo-tui --use URL --no-restart        # 只落盘
   「配置看着没问题，但整批节点超时」。
 - 如果一台解析器超时/无应答，本次会拉黑它，避免每个域名都白等一轮。
 - 候选 IP 全都不通时仍然钉第一个（节点可能只是暂时抖动；留域名反而一定解析失败）。
-- **DNS 也一起修**：如果 `dns.nameserver` 里没有任何 IP 字面量（全是 DoH/域名），
-  会换成本机可用的 `223.6.6.6 / 119.28.28.28 / 114.114.114.114 / 180.76.76.76`，
-  保留 `fake-ip`、`fake-ip-filter` 等其它 DNS 设置。订阅自带一组不可达 DoH 时，
-  症状是「github/google 能上，但 baidu/bilibili 全部 connection reset / dns resolve failed」。
+- **DNS 也一起修**：`nameserver` / `fallback` / `proxy-server-nameserver` /
+  `default-nameserver` 里只要全是 DoH/域名、没有一个 IP 字面量，就换成本机可用的
+  `223.6.6.6 / 119.28.28.28 / 114.114.114.114 / 180.76.76.76`，保留 `fake-ip`、
+  `fake-ip-filter`、`fallback-filter` 等其它设置。订阅自带不可达 DoH 时，症状是
+  「github/google 能上，但 baidu/bilibili 全部 connection reset / dns resolve failed」，
+  或者 SSH/长连接卡在 banner exchange。
 
 `--dns <ip[,ip]>` 可覆盖解析服务器；`MIHOMO_TUI_DNS` 环境变量同效。
 

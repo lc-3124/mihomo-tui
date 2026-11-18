@@ -249,6 +249,24 @@ void test_dns_fix() {
     CHECK(block_out.find("fake-ip-filter") != std::string::npos);
     CHECK_EQ(count_substr(block_out, "\n    - "), 4);
 
+    // fallback / proxy-server-nameserver 全是 DoH 时也要修。
+    const char* multi_doh =
+        "dns:\n"
+        "  nameserver: [223.6.6.6]\n"
+        "  proxy-server-nameserver: ['https://223.6.6.6/dns-query', 'https://doh.pub/dns-query']\n"
+        "  fallback: ['https://223.5.5.5/dns-query']\n"
+        "  fallback-filter: { geoip: true, geoip-code: CN }\n"
+        "proxies: []\n";
+    auto multi_lines = cfg::split_lines(multi_doh);
+    CHECK(cfg::dns_needs_fix(multi_lines));
+    CHECK(cfg::fix_dns_servers(multi_lines));
+    const std::string multi_out = cfg::join_lines(multi_lines);
+    CHECK(multi_out.find("proxy-server-nameserver: [223.6.6.6") != std::string::npos);
+    CHECK(multi_out.find("fallback: [223.6.6.6") != std::string::npos);
+    CHECK(multi_out.find("https://") == std::string::npos);
+    CHECK(multi_out.find("fallback-filter") != std::string::npos);
+    CHECK(!cfg::dns_needs_fix(multi_lines));
+
     // 已经有 IP 的不要动。
     auto plain = cfg::split_lines(
         "dns:\n  nameserver: [223.6.6.6]\n");

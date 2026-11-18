@@ -456,8 +456,8 @@ struct DnsView {
     std::vector<std::string> values;
 };
 
-// 找 dns.nameserver：支持 `nameserver: [a, b]` 和块式 `nameserver:\n  - a`。
-DnsView inspect_dns(const std::vector<std::string>& lines) {
+// 找 dns.<key>：支持 `key: [a, b]` 和块式 `key:\n  - a`。
+DnsView inspect_dns_key(const std::vector<std::string>& lines, std::string_view key) {
     DnsView view;
 
     std::size_t dns_start = kNoLine;
@@ -475,20 +475,20 @@ DnsView inspect_dns(const std::vector<std::string>& lines) {
 
     for (std::size_t i = dns_start + 1; i < dns_end; ++i) {
         auto info = analyze(lines[i]);
-        if (!starts_with(info.text, "nameserver:")) continue;
-        if (info.text.size() > 11 && info.text[11] != ' '
-            && info.text[11] != '[')
-            continue; // nameserver-policy 之类
 
-        view.found    = true;
-        view.ns_line  = i;
+        std::size_t colon = info.text.find(':');
+        if (colon == std::string_view::npos) continue;
+        if (trim(info.text.substr(0, colon)) != key) continue;
+
+        view.found     = true;
+        view.ns_line   = i;
         view.ns_indent = static_cast<std::size_t>(info.indent);
 
-        std::string_view rest = trim(info.text.substr(11));
+        std::string_view rest = trim(info.text.substr(colon + 1));
         if (!rest.empty() && rest.front() == '[') {
             view.inline_form = true;
             view.values      = split_inline_list(rest);
-        } else {
+        } else if (rest.empty()) {
             for (std::size_t j = i + 1; j < dns_end; ++j) {
                 auto sub = analyze(lines[j]);
                 if (sub.indent <= info.indent) break;
@@ -498,6 +498,9 @@ DnsView inspect_dns(const std::vector<std::string>& lines) {
                 view.item_lines.push_back(j);
                 view.values.push_back(value);
             }
+        } else {
+            // fallback: null 之类，不当作列表。
+            view.values = {std::string(rest)};
         }
         break;
     }
@@ -516,22 +519,27 @@ const std::vector<std::string>& local_dns_servers() {
     return kServers;
 }
 
-} // namespace
-
-bool dns_needs_fix(const std::vector<std::string>& lines) {
-    const auto view = inspect_dns(lines);
-    return view.found && !has_plain_ip(view.values);
+const std::vector<std::string_view>& dns_list_keys() {
+    static const std::vector<std::string_view> kKeys = {
+        "nameserver", "fallback", "proxy-server-nameserver", "default-nameserver"};
+    return kKeys;
 }
 
-bool fix_dns_servers(std::vector<std::string>& lines) {
-    const auto view = inspect_dns(lines);
-    if (!view.found || has_plain_ip(view.values)) return false;
+// 只有「确实是一个列表且没有一个 IP」才需要修。
+bool view_needs_fix(const DnsView& view) {
+    if (!view.found || view.values.empty()) return false;
+    return !has_plain_ip(view.values);
+}
 
+bool rewrite_dns_list(std::vector<std::string>& lines, const DnsView& view,
+                      std::string_view key) {
     const auto& servers = local_dns_servers();
 
     if (view.inline_form) {
         std::string indent(static_cast<std::size_t>(view.ns_indent), ' ');
-        std::string line = indent + "nameserver: [";
+        std::string line = indent;
+        line += key;
+        line += ": [";
         for (std::size_t i = 0; i < servers.size(); ++i) {
             if (i) line += ", ";
             line += servers[i];
@@ -541,7 +549,6 @@ bool fix_dns_servers(std::vector<std::string>& lines) {
         return true;
     }
 
-    // 块式：重写前 N 项，多余项删掉。
     if (view.item_lines.empty()) return false;
 
     const std::string first_indent =
@@ -554,11 +561,29 @@ bool fix_dns_servers(std::vector<std::string>& lines) {
             lines.insert(lines.begin() + static_cast<long>(view.item_lines.back() + 1 + (i - view.item_lines.size())),
                          first_indent + "- " + servers[i]);
     }
-    // 删除超出的旧项（从后往前，避免下标失效）。
     for (std::size_t i = view.item_lines.size(); i > servers.size(); --i)
         lines.erase(lines.begin() + static_cast<long>(view.item_lines[i - 1]));
 
     return true;
+}
+
+} // namespace
+
+bool dns_needs_fix(const std::vector<std::string>& lines) {
+    for (auto key : dns_list_keys())
+        if (view_needs_fix(inspect_dns_key(lines, key))) return true;
+    return false;
+}
+
+bool fix_dns_servers(std::vector<std::string>& lines) {
+    bool changed = false;
+    for (auto key : dns_list_keys()) {
+        // 每次重新 inspect：前面的改写可能移动行号。
+        auto view = inspect_dns_key(lines, key);
+        if (!view_needs_fix(view)) continue;
+        changed |= rewrite_dns_list(lines, view, key);
+    }
+    return changed;
 }
 
 bool config_needs_compat(const std::vector<std::string>& lines) {
