@@ -117,6 +117,8 @@ struct UseOptions {
     bool        restart  = true;     ///< --no-restart 时只落盘
     bool        offline  = false;    ///< --offline：不连内核，跳过在线验证
     std::vector<std::string> dns_servers; ///< --dns：覆盖节点域名解析服务器
+    std::string proxy;               ///< --proxy：下载时使用的代理；空 = 直连
+    bool        insecure = false;    ///< --insecure：跳过 TLS 证书校验
 };
 
 /**

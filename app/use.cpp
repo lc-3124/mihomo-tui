@@ -746,7 +746,8 @@ int progress_cb(void* userdata, curl_off_t dltotal, curl_off_t dlnow,
     return 0;
 }
 
-DownloadOutcome download(const std::string& url, std::ostream& out, bool live) {
+DownloadOutcome download(const std::string& url, std::ostream& out, bool live,
+                         const std::string& proxy, bool insecure) {
     DownloadOutcome result;
     auto            start = std::chrono::steady_clock::now();
 
@@ -760,6 +761,19 @@ DownloadOutcome download(const std::string& url, std::ostream& out, bool live) {
 
     curl_easy_setopt(handle, CURLOPT_URL, url.c_str());
     curl_easy_setopt(handle, CURLOPT_USERAGENT, "mihomo"); // 关键：拿 Clash YAML
+
+    // 默认直连：libcurl 默认会读取 http(s)_proxy 环境变量，而本机代理
+    // 往往正处在「待修复」状态，用坏代理去下载配置会直接 SSL connect error。
+    if (proxy.empty()) {
+        curl_easy_setopt(handle, CURLOPT_PROXY, "");
+        curl_easy_setopt(handle, CURLOPT_NOPROXY, "*");
+    } else {
+        curl_easy_setopt(handle, CURLOPT_PROXY, proxy.c_str());
+    }
+    if (insecure) {
+        curl_easy_setopt(handle, CURLOPT_SSL_VERIFYPEER, 0L);
+        curl_easy_setopt(handle, CURLOPT_SSL_VERIFYHOST, 0L);
+    }
     curl_easy_setopt(handle, CURLOPT_FOLLOWLOCATION, 1L);
     curl_easy_setopt(handle, CURLOPT_MAXREDIRS, 5L);
     curl_easy_setopt(handle, CURLOPT_CONNECTTIMEOUT, 10L);
@@ -869,7 +883,7 @@ int run_use(const UseOptions& options, std::ostream& out) {
     std::string content;
     if (url_source) {
         const bool live = (&out == &std::cout) && ::isatty(STDOUT_FILENO);
-        auto       dl   = download(opts.source, out, live);
+        auto       dl   = download(opts.source, out, live, opts.proxy, opts.insecure);
         if (!dl.ok) {
             out << "[2/7] 下载 ... 失败: " << dl.error << "\n";
             return 3;
@@ -910,8 +924,26 @@ int run_use(const UseOptions& options, std::ostream& out) {
     }
     out << "[3/7] 格式识别 ... Clash YAML / " << detected.proxy_count << " 节点\n";
 
-    //-- [4/7] 兼容修正 ------------------------------------------------------
     auto lines = cfg::split_lines(content);
+
+    // 有些机场在到期后会返回一份「占位配置」：节点全指向 127.0.0.1，
+    // 名字写着「服务已到期 / 请续费」。这种配置装进去只会把现有配置换死。
+    {
+        const auto entries = cfg::scan_proxies(lines);
+        int        loopback = 0;
+        for (const auto& entry : entries) {
+            const std::string& host = entry.server;
+            if (starts_with(host, "127.") || host == "::1" || host == "localhost")
+                ++loopback;
+        }
+        if (!entries.empty() && loopback == static_cast<int>(entries.size())) {
+            out << "订阅返回的是占位节点（服务已到期或需要续费），未覆盖现有配置。\n";
+            return 2;
+        }
+    }
+
+    //-- [4/7] 兼容修正 ------------------------------------------------------
+    // `lines` 已在格式检查阶段创建（见上）。
 
     // 默认「按需自动开启」：域名 server 在 UDP/53 被掐的本机会解析失败，
     // 非 safari 指纹完不成 REALITY 握手。两者都会表现为「全部超时」。

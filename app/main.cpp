@@ -39,6 +39,8 @@ R"(mihomo-tui — 管理本机 mihomo 内核的终端界面
   --offline            跳过内核在线验证（内核没运行时用）
   --dns <ip[,ip]>      覆盖节点域名的解析服务器（默认 223.6.6.6 优先；
                        不同 DNS 会返回不同节点 IP，选错会一片超时）
+  --proxy <url>        下载配置时走指定代理（默认直连，不读 http(s)_proxy）
+  --insecure           --use 下载时跳过 TLS 证书校验（自签名订阅用）
   --config <路径>      目标配置（默认 ~/.config/mihomo/config.yaml）
 
 其它:
@@ -96,6 +98,10 @@ int main(int argc, char** argv) {
             use.restart = false;
         } else if (arg == "--offline") {
             use.offline = true;
+        } else if (arg == "--proxy") {
+            use.proxy = next("--proxy");
+        } else if (arg == "--insecure") {
+            use.insecure = true;
         } else if (arg == "--dns") {
             std::string spec = next("--dns");
             std::size_t start = 0;

@@ -114,6 +114,8 @@ mihomo-tui --use 'https://.../config?token=...'
 mihomo-tui --use URL                    # 默认自动做兼容修正
 mihomo-tui --use URL --no-compat         # 原样落盘（本机不建议）
 mihomo-tui --use URL --no-restart        # 只落盘
+mihomo-tui --use URL --proxy http://127.0.0.1:7890   # 下载走代理
+mihomo-tui --use URL --insecure          # 跳过证书校验（自签名订阅）
 ```
 
 七步流程，逐行打印：
@@ -127,6 +129,12 @@ mihomo-tui --use URL --no-restart        # 只落盘
 [6/7] 临时文件加载验证 ... PUT /configs {"path":tmp,"force":true} -> ok
 [7/7] 落盘 + 生效 ... ok（当前出口 新加坡01）
 ```
+
+下载默认**直连**，不读 `http(s)_proxy` 环境变量——代理往往正是待修复的对象，
+用坏代理去下载配置会直接 `SSL connect error`。需要走代理时用 `--proxy`。
+
+另外会识别「已到期」的占位订阅（节点全指向 `127.0.0.1`、名字写着服务到期/续费）：
+这种配置直接拒绝，退出码 2，不会覆盖现有配置。
 
 安全约束：
 

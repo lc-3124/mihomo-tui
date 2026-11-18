@@ -493,6 +493,33 @@ void test_cli_validate_failure() {
     CHECK_EQ(*content, "old-config: true\n");
 }
 
+void test_placeholder() {
+    std::puts("test_placeholder");
+
+    const std::string dir = make_temp_dir();
+    CHECK(!dir.empty());
+    if (dir.empty()) return;
+
+    const std::string source = dir + "/placeholder.yaml";
+    const std::string target = dir + "/config.yaml";
+    std::string error;
+    CHECK(write_file_atomic(source,
+        "proxies:\n"
+        "  - {name: 您的服务已到期, type: ss, server: 127.0.0.1, port: 443}\n"
+        "  - {name: 请登入去续费, type: ss, server: 127.0.0.1, port: 443}\n",
+        error));
+
+    UseOptions options;
+    options.source      = source;
+    options.config_path = target;
+    options.restart     = false;
+
+    std::ostringstream out;
+    CHECK_EQ(run_use(options, out), 2);
+    CHECK(out.str().find("占位节点") != std::string::npos);
+    CHECK(!file_exists(target));
+}
+
 void test_cli_offline() {
     std::puts("test_cli_offline");
 
@@ -534,6 +561,7 @@ int main() {
     test_cli_auto_compat();
     test_cli_validate_failure();
     test_cli_offline();
+    test_placeholder();
 
     if (g_failures == 0) {
         std::puts("test_use: OK");
