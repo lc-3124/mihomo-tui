@@ -601,21 +601,33 @@ void App::poll_stats(Api& api, Stats& local, bool fetch_proxies) {
         auto j = nlohmann::json::parse(proxies_response.body);
         const auto& proxies = j.at("proxies");
 
-        std::vector<std::string> groups;
+        struct GroupRef {
+            std::string name;
+            std::string type;
+        };
+        std::vector<GroupRef> group_refs;
         for (auto it = proxies.begin(); it != proxies.end(); ++it) {
             const std::string type = it.value().value("type", "");
             if ((type == "Selector" || type == "URLTest")
                 && it.key() != "GLOBAL") {
-                groups.push_back(it.key());
+                group_refs.push_back({it.key(), type});
             }
         }
-        // 默认分组排最前，其余保持稳定顺序。
-        std::stable_sort(groups.begin(), groups.end(),
-                         [](const std::string& a, const std::string& b) {
-                             if (a == kDefaultGroup) return true;
-                             if (b == kDefaultGroup) return false;
-                             return false;
+        // 默认分组排最前；不同机场的主选择组名字不一样，这里给常见名字和
+        // Selector 类型更高优先级，避免默认落到 URLTest 上（不能手动切换）。
+        auto score = [](const GroupRef& g) {
+            if (g.name == kDefaultGroup) return 0;
+            if (g.name == "🚀 节点选择") return 1;
+            if (g.type == "Selector") return 2;
+            return 3;
+        };
+        std::stable_sort(group_refs.begin(), group_refs.end(),
+                         [&](const GroupRef& a, const GroupRef& b) {
+                             return score(a) < score(b);
                          });
+        std::vector<std::string> groups;
+        groups.reserve(group_refs.size());
+        for (const auto& g : group_refs) groups.push_back(g.name);
         local.groups = groups;
 
         if (local.group.empty()
