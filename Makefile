@@ -32,7 +32,9 @@ LDLIBS  := -lcurl -lpthread
 
 TEST_TARGETS := $(BUILD)/test/test_widgets $(BUILD)/test/test_use $(BUILD)/test/test_logfmt
 
-.PHONY: all run demo test check clean fmt
+PREFIX ?= $(HOME)/.local
+
+.PHONY: all run demo test check clean fmt install
 
 all: $(BIN)
 
@@ -92,6 +94,10 @@ run: $(BIN)
 
 demo: $(BIN)
 	@$(BIN) --demo-layout
+
+install: $(BIN)
+	@install -Dm755 $(BIN) $(PREFIX)/bin/mihomo-tui
+	@echo "  已安装 $(PREFIX)/bin/mihomo-tui"
 
 clean:
 	@rm -rf $(BUILD)
