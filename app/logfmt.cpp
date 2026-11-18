@@ -157,7 +157,7 @@ LogLine format_log_line(vawk::widget::LogLevel level, std::string raw) {
     const std::string body  = std::string(trim(parsed.msg));
 
     // 时间固定 8 列 + 空格，方便纵向扫读。
-    add(line.spans, parsed.time + " ", LogTone::Dim);
+    add(line.spans, parsed.time + " ", LogTone::Time);
 
     std::string      proto;
     std::string_view rest = body;

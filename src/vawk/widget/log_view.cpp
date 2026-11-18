@@ -64,6 +64,9 @@ LogView::LogView(std::size_t capacity) : capacity_(capacity ? capacity : 1) {
     selected_style = vatui::Style{.fg_sgr = vatui::fg(vaterm::Color8{231}),
                                   .bg_sgr = vatui::bg(vaterm::Color8{25}),
                                   .effects_sgr = vatui::effects({})};
+    selected_time_style = vatui::Style{.fg_sgr = vatui::fg(vaterm::Color8{231}),
+                                       .bg_sgr = vatui::bg(vaterm::Color8{31}),
+                                       .effects_sgr = vatui::effects({vaterm::TextEffect::BOLD})};
 }
 
 const vatui::Style& LogView::tone_style(LogTone tone) const {
@@ -75,6 +78,7 @@ const vatui::Style& LogView::tone_style(LogTone tone) const {
     case LogTone::Direct: return direct_style;
     case LogTone::Reject: return reject_style;
     case LogTone::Accent: return accent_style;
+    case LogTone::Time:   return dim_style;
     case LogTone::Warn:   return warn_style;
     case LogTone::Error:  return error_style;
     case LogTone::Default: break;
@@ -265,10 +269,20 @@ void LogView::render(Canvas& canvas) {
         }
 
         int col = bounds_.x;
+        int span_index = 0;
         for (const auto& span : line->spans) {
             if (col >= bounds_.right()) break;
-            canvas.put_text(col, row, span.text, with_bg(tone_style(span.tone)));
+
+            // 选中行：整行是下潜的深色背景，行首时间块再单独提亮，
+            // 这样一眼能定位「选中的是哪一条」。
+            const bool time_block =
+                is_selected && focused && span_index == 0 && span.tone == LogTone::Time;
+
+            canvas.put_text(col, row, span.text,
+                            time_block ? selected_time_style
+                                       : with_bg(tone_style(span.tone)));
             col += vaterm::utf::width(span.text);
+            ++span_index;
         }
     }
 }

@@ -285,10 +285,15 @@ void App::prepare_widgets() {
     inspector_panel_.set_content(nullptr);
 
     // 选中行用高饱和纯色底（渐变底会被文字背景打断，反而花）。
+    // 选中行：整行用更深的底色「下潜」，时间块用青色单独提亮。
     log_view_.selected_style = vatui::Style{
         .fg_sgr = vatui::fg(vaterm::Color8{231}),
-        .bg_sgr = vatui::bg(vaterm::Rgb{40, 55, 110}),
+        .bg_sgr = vatui::bg(vaterm::Rgb{20, 24, 44}),
         .effects_sgr = vatui::effects({})};
+    log_view_.selected_time_style = vatui::Style{
+        .fg_sgr = vatui::fg(vaterm::Color8{231}),
+        .bg_sgr = vatui::bg(vaterm::Rgb{0, 110, 140}),
+        .effects_sgr = vatui::effects({vaterm::TextEffect::BOLD})};
 
     node_list_.gradient_enabled = false;
     node_list_.selected_style = vatui::Style{
@@ -396,7 +401,7 @@ void App::prepare_demo() {
     demo_note.level = LogLevel::Info;
     demo_note.raw   = "演示模式：数据全部是假的，按 q 退出";
     demo_note.text  = "22:00:00 " + demo_note.raw;
-    demo_note.spans = {{"22:00:00 ", LogTone::Dim},
+    demo_note.spans = {{"22:00:00 ", LogTone::Time},
                        {"▸ ", LogTone::Accent},
                        {demo_note.raw, LogTone::Default}};
     log_view_.push(std::move(demo_note));
@@ -1028,7 +1033,7 @@ void App::status(std::string message) {
     line.raw   = message;
     const std::string time = now_hms();
     line.text  = time + " " + message;
-    line.spans = {{time + " ", LogTone::Dim},
+    line.spans = {{time + " ", LogTone::Time},
                   {"▸ ", LogTone::Accent},
                   {message, LogTone::Default}};
     log_view_.push(std::move(line));

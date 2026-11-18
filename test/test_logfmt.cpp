@@ -52,7 +52,7 @@ void test_traffic() {
     CHECK_EQ(line.text,
              std::string("17:20:01 TCP www.google.com → 🇸🇬 新加坡01[直连]"));
     CHECK_EQ(line.spans.size(), std::size_t{5});
-    CHECK(has_tone(line, "17:20:01", LogTone::Dim));
+    CHECK(has_tone(line, "17:20:01", LogTone::Time));
     CHECK(has_tone(line, "TCP", LogTone::Proto));
     CHECK(has_tone(line, "www.google.com", LogTone::Host));
     CHECK(has_tone(line, "新加坡01", LogTone::Out));

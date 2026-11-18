@@ -294,6 +294,41 @@ void test_log_spans() {
     CHECK(lines[0].find("没有匹配") != std::string::npos);
 }
 
+void test_log_time_highlight() {
+    std::puts("test_log_time_highlight");
+
+    LogView view(10);
+    view.selected_style      = vatui::Style{.bg_sgr = "\033[48;2;1;2;3m"};
+    view.selected_time_style = vatui::Style{.bg_sgr = "\033[48;2;4;5;6m"};
+
+    LogLine line;
+    line.level = LogLevel::Info;
+    line.text  = "12:34:56 hello";
+    line.raw   = line.text;
+    line.spans = {{"12:34:56 ", LogTone::Time}, {"hello", LogTone::Default}};
+    view.push(line);
+    view.set_bounds(Rect{0, 0, 20, 2});
+    view.focused = true;
+
+    vatui::Framebuffer fb;
+    fb.setSize({20, 2});
+    Canvas canvas(fb, Rect{0, 0, 20, 2});
+    view.render(canvas);
+    std::string ansi = fb.compose();
+
+    CHECK(ansi.find("\033[48;2;1;2;3m") != std::string::npos); // 整行下潜
+    CHECK(ansi.find("\033[48;2;4;5;6m") != std::string::npos); // 时间块提亮
+
+    // 失焦时不再单独提亮时间块。
+    view.focused = false;
+    vatui::Framebuffer fb2;
+    fb2.setSize({20, 2});
+    Canvas canvas2(fb2, Rect{0, 0, 20, 2});
+    view.render(canvas2);
+    ansi = fb2.compose();
+    CHECK(ansi.find("\033[48;2;4;5;6m") == std::string::npos);
+}
+
 //-- ListView ---------------------------------------------------------------
 
 void test_list_view() {
@@ -545,6 +580,7 @@ int main() {
     test_panel();
     test_log_view();
     test_log_spans();
+    test_log_time_highlight();
     test_list_view();
     test_sparkline();
     test_segmented();

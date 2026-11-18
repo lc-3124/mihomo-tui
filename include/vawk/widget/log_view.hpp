@@ -39,6 +39,7 @@ enum class LogTone {
     Warn,
     Error,
     Accent,  ///< App 自己产生的提示（操作日志）
+    Time,    ///< 行首时间戳（选中时单独高亮）
 };
 
 /** @brief 带语义色的文本片段。 */
@@ -99,7 +100,8 @@ class LogView : public Widget {
     void render(Canvas& canvas) override;
     bool on_event(const vaterm::InputData& event) override;
 
-    vatui::Style selected_style{}; ///< 选中行背景
+    vatui::Style selected_style{};      ///< 选中行背景（下潜的深色）
+    vatui::Style selected_time_style{}; ///< 选中行的时间块背景
 
     vatui::Style debug_style{};
     vatui::Style info_style{};
