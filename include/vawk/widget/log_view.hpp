@@ -100,8 +100,8 @@ class LogView : public Widget {
     void render(Canvas& canvas) override;
     bool on_event(const vaterm::InputData& event) override;
 
-    vatui::Style selected_style{};      ///< 选中行背景（下潜的深色）
-    vatui::Style selected_time_style{}; ///< 选中行的时间块背景
+    vatui::Style selected_style{};      ///< 选中行整行背景（铺满，不留色块边角）
+    vatui::Style selected_time_style{}; ///< 选中行时间文字；背景应与 selected_style 相同
 
     vatui::Style debug_style{};
     vatui::Style info_style{};

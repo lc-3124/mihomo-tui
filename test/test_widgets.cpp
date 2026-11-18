@@ -298,8 +298,10 @@ void test_log_time_highlight() {
     std::puts("test_log_time_highlight");
 
     LogView view(10);
+    // 整行统一底色；时间只改前景色，背景必须一致，否则会出现直角色块。
     view.selected_style      = vatui::Style{.bg_sgr = "\033[48;2;1;2;3m"};
-    view.selected_time_style = vatui::Style{.bg_sgr = "\033[48;2;4;5;6m"};
+    view.selected_time_style = vatui::Style{.fg_sgr = "\033[38;2;4;5;6m",
+                                            .bg_sgr = "\033[48;2;1;2;3m"};
 
     LogLine line;
     line.level = LogLevel::Info;
@@ -316,8 +318,9 @@ void test_log_time_highlight() {
     view.render(canvas);
     std::string ansi = fb.compose();
 
-    CHECK(ansi.find("\033[48;2;1;2;3m") != std::string::npos); // 整行下潜
-    CHECK(ansi.find("\033[48;2;4;5;6m") != std::string::npos); // 时间块提亮
+    CHECK(ansi.find("\033[48;2;1;2;3m") != std::string::npos); // 整行底色
+    CHECK(ansi.find("\033[38;2;4;5;6m") != std::string::npos); // 时间文字色
+    CHECK(ansi.find("\033[48;2;4;5;6m") == std::string::npos); // 不再有时间色块
 
     // 失焦时不再单独提亮时间块。
     view.focused = false;
@@ -326,7 +329,7 @@ void test_log_time_highlight() {
     Canvas canvas2(fb2, Rect{0, 0, 20, 2});
     view.render(canvas2);
     ansi = fb2.compose();
-    CHECK(ansi.find("\033[48;2;4;5;6m") == std::string::npos);
+    CHECK(ansi.find("\033[38;2;4;5;6m") == std::string::npos);
 }
 
 //-- ListView ---------------------------------------------------------------

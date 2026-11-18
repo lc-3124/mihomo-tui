@@ -285,14 +285,15 @@ void App::prepare_widgets() {
     inspector_panel_.set_content(nullptr);
 
     // 选中行用高饱和纯色底（渐变底会被文字背景打断，反而花）。
-    // 选中行：整行用更深的底色「下潜」，时间块用青色单独提亮。
+    // 选中行：整行同一条靛蓝底色铺满（避免时间块出现直角边），
+    // 时间只换文字颜色，不再换背景。
     log_view_.selected_style = vatui::Style{
-        .fg_sgr = vatui::fg(vaterm::Color8{231}),
-        .bg_sgr = vatui::bg(vaterm::Rgb{20, 24, 44}),
+        .fg_sgr = vatui::fg(vaterm::Rgb{238, 242, 255}),
+        .bg_sgr = vatui::bg(vaterm::Rgb{46, 48, 92}),
         .effects_sgr = vatui::effects({})};
     log_view_.selected_time_style = vatui::Style{
-        .fg_sgr = vatui::fg(vaterm::Color8{231}),
-        .bg_sgr = vatui::bg(vaterm::Rgb{0, 110, 140}),
+        .fg_sgr = vatui::fg(vaterm::Rgb{110, 235, 255}),
+        .bg_sgr = vatui::bg(vaterm::Rgb{46, 48, 92}),
         .effects_sgr = vatui::effects({vaterm::TextEffect::BOLD})};
 
     node_list_.gradient_enabled = false;
