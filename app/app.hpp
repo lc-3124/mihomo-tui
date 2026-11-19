@@ -49,6 +49,7 @@ struct AppOptions {
     int         cols           = 0;     ///< snapshot 尺寸；0 = 80
     int         rows           = 0;     ///< snapshot 尺寸；0 = 24
     std::string api_base       = "http://127.0.0.1:9090";
+    int         test_jobs      = 32; ///< 全局测速并发数
 };
 
 class App {

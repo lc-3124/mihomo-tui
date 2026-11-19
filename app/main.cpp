@@ -28,6 +28,7 @@ R"(mihomo-tui — 管理本机 mihomo 内核的终端界面
   --ansi               snapshot 输出带 ANSI 转义（默认纯文本）
   --live               snapshot 抓取真实内核数据（默认用演示数据）
   --fps                状态栏显示 fps / 帧耗时 / 写入单元格数
+  --test-jobs N        全局测速并发数（默认 32，最多 64）
   --api <URL>          内核 API 地址（默认 http://127.0.0.1:9090）
 
 --use:
@@ -131,6 +132,10 @@ int main(int argc, char** argv) {
             live = true;
         } else if (arg == "--fps") {
             app.fps = true;
+        } else if (arg == "--test-jobs") {
+            app.test_jobs = std::atoi(next("--test-jobs").c_str());
+            if (app.test_jobs < 1) die_usage("--test-jobs 必须 >= 1");
+            if (app.test_jobs > 64) app.test_jobs = 64;
         } else {
             die_usage("未知参数: " + arg);
         }

@@ -849,12 +849,12 @@ void App::run_global_test(const std::string& group, std::uint64_t epoch) {
     dirty_ = true;
     progress("全局测速 0/" + std::to_string(total));
 
-    // 8 路并发：60 个节点也不会串成 5 分钟。
+    // 并发来自 --test-jobs，默认 32：几十个节点也能在十几秒内测完。
     std::atomic<std::size_t> next{0};
     std::atomic<int>         done{0};
     std::atomic<int>         failed{0};
 
-    const int workers = std::min(8, total);
+    const int workers = std::max(1, std::min({total, opts_.test_jobs, 64}));
     auto      work    = [&] {
         Api local(opts_.api_base);
         local.set_timeout_ms(7000);
@@ -864,12 +864,7 @@ void App::run_global_test(const std::string& group, std::uint64_t epoch) {
             std::size_t index = next.fetch_add(1);
             if (index >= leaves.size()) break;
 
-            int delay = query_delay(local, leaves[index]);
-            if (delay < 0 && !delay_cancel_.load()) {
-                // 机场对连续测速有节流，失败节点补测一次再判死刑。
-                std::this_thread::sleep_for(std::chrono::milliseconds(150));
-                delay = query_delay(local, leaves[index]);
-            }
+            const int delay = query_delay(local, leaves[index]);
             if (delay_cancel_.load()) break;
 
             {
